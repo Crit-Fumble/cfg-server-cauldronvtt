@@ -1,0 +1,10 @@
+.DS_Store
+
+# Local test volume mounts — never commit user data or a generated DB password
+data/
+*.dbpass
+
+# Installable deps + test output
+node_modules/
+test-results/
+coverage/

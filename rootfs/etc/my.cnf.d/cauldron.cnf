@@ -1,0 +1,54 @@
+# MariaDB tuned for a single-group VTT on the `nano` tier (0.25 thread / 512 MB).
+#
+# MariaDB's defaults assume a dedicated database host and will happily reserve
+# several hundred MB before serving a single query. Cauldron's working set is
+# tiny — a few dozen adventures, maps and characters — so almost all of that is
+# waste that pushes the container toward OOM.
+#
+# Tune here, in the image, rather than at runtime: a per-install override would
+# be one more thing to get wrong per user for no benefit.
+
+[mysqld]
+# Socket only. Nothing outside this container talks to this database, and not
+# listening on TCP removes the entire network attack surface.
+skip-networking
+socket = /run/mysqld/mysqld.sock
+
+# InnoDB is the memory driver. 32M holds Cauldron's whole working set with room
+# to spare; the default (128M) is pure overhead here.
+innodb_buffer_pool_size = 32M
+innodb_log_file_size = 32M
+innodb_flush_method = O_DIRECT
+
+# Uploads are written to disk, not BLOBs, so packets stay small. 16M is
+# generous for the largest INSERT this app makes.
+max_allowed_packet = 16M
+
+# performance_schema alone costs ~80-100 MB. It is a profiling tool and this is
+# not a database we profile — the app is upstream's and we do not tune its
+# queries.
+performance_schema = OFF
+
+# One group of players plus php-fpm's pool. 25 leaves headroom for the
+# healthcheck and admin connections without reserving per-connection buffers
+# for a crowd that will never arrive.
+max_connections = 25
+thread_cache_size = 4
+table_open_cache = 128
+
+# Per-connection buffers: these multiply by max_connections, so small defaults
+# matter more than they look.
+sort_buffer_size = 256K
+read_buffer_size = 128K
+join_buffer_size = 256K
+tmp_table_size = 16M
+max_heap_table_size = 16M
+
+# MyISAM is used only by the seeded system tables; keep its cache minimal.
+key_buffer_size = 8M
+
+# DNS lookups on connect are pointless over a unix socket and add latency.
+skip-name-resolve
+
+character-set-server = utf8mb4
+collation-server = utf8mb4_general_ci
