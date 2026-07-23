@@ -220,6 +220,24 @@ log "starting cauldrond (websocket, 127.0.0.1:2001 — proxied by nginx)"
 su -s /bin/sh -c "/usr/sbin/cauldrond" "$RUN_AS" &
 CAULDROND_PID=$!
 
+# Readiness BARRIER, not a fixed sleep: cauldrond binds :2001 a beat after it's
+# forked, and nginx will happily start proxying /websocket to a port nobody is
+# listening on yet — so a client (or CI) that connects the instant the homepage
+# is up races the daemon and gets a 502. Block until :2001 is actually accepting
+# before we start nginx, so "homepage up" deterministically implies "websocket
+# up". Same poll-the-real-condition pattern as start_mariadb above (proceeds the
+# moment it's ready; dies fast if the daemon crashes; bounded so it can't hang).
+waited=0
+# cauldrond binds 0.0.0.0:2001; match the port with a trailing-boundary so it
+# can't hit :20010 etc. netstat is the tool present in the base image (no ss).
+until netstat -ltn 2>/dev/null | grep -qE ':2001[[:space:]]'; do
+  kill -0 "$CAULDROND_PID" 2>/dev/null || die "cauldrond exited before binding :2001"
+  sleep 1
+  waited=$((waited + 1))
+  [ "$waited" -lt 30 ] || die "cauldrond did not bind :2001 within 30s"
+done
+log "cauldrond ready on :2001 after ${waited}s"
+
 log "starting nginx"
 nginx -g 'daemon off;' &
 NGINX_PID=$!
