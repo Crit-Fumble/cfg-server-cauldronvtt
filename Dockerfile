@@ -121,7 +121,12 @@ ENV CAULDRON_DB_NAME=cauldron \
     CAULDRON_WEBSOCKET_PORT=443 \
     CAULDRON_ENABLE_MARKET=no
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+# The homepage only serves once the entrypoint's readiness barrier has cleared
+# (cauldrond bound to :2001, then nginx), so a passing check means the app AND
+# websocket are up — core-server's status/proxy gate on this `healthy` signal
+# instead of guessing from container state. 10s interval so "ready" tracks
+# actual readiness closely rather than lagging a full 30s behind it.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 \
   CMD wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.sh"]

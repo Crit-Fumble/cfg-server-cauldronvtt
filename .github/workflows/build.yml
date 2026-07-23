@@ -99,11 +99,23 @@ jobs:
             || { echo "homepage did not render"; docker logs cauldron-ci; exit 1; }
 
           echo "--- the websocket upgrades through nginx to cauldrond ---"
-          curl -s -i --max-time 4 --http1.1 \
+          # The entrypoint's readiness barrier guarantees cauldrond is bound to
+          # :2001 before nginx serves, so no retry is needed here. Capture the
+          # full response so a failure shows WHAT came back (502 = nginx can't
+          # reach cauldrond; 4xx = cauldrond rejected the handshake; empty =
+          # timeout) rather than a bare "did not upgrade".
+          ws_resp=$(curl -s -i --max-time 6 --http1.1 \
             -H "Connection: Upgrade" -H "Upgrade: websocket" \
             -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-            http://127.0.0.1:8090/websocket | grep -q '101 Switching Protocols' \
-            || { echo "websocket did not upgrade"; docker logs cauldron-ci; exit 1; }
+            http://127.0.0.1:8090/websocket || true)
+          printf '%s\n' "$ws_resp" | grep -q '101 Switching Protocols' || {
+            echo "websocket did not upgrade — response was:"
+            printf '%s\n' "$ws_resp" | head -20
+            echo "--- direct to cauldrond :2001 (bypass nginx) ---"
+            docker exec cauldron-ci sh -c 'curl -s -i --max-time 6 --http1.1 -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" http://127.0.0.1:2001/ 2>&1 | head -10 || true'
+            docker logs cauldron-ci
+            exit 1
+          }
 
           echo "--- only index.php executes: uploads must not run as PHP ---"
           docker exec cauldron-ci sh -c 'echo "<?php echo 1337;" > /data/files/probe.php'
