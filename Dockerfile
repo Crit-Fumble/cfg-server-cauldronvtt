@@ -111,6 +111,8 @@ RUN mkdir -p /data /run/mysqld /run/php /run/nginx /tmp/php-sessions /var/lib/ng
 # managed process to www-data. Nothing listens as root: nginx workers, php-fpm
 # pools and cauldrond all run as uid 82.
 EXPOSE 80/tcp
+# Activity-probe endpoint (nginx stub_status) — host-published, not Caddy-routed.
+EXPOSE 8080/tcp
 
 ENV CAULDRON_DB_NAME=cauldron \
     CAULDRON_DB_USER=cauldron \
