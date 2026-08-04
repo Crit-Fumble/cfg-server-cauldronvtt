@@ -10,10 +10,10 @@ name: Build + publish image
 
 on:
   push:
-    branches: [main]
+    branches: [main, next]
     tags: ['v*']
   pull_request:
-    branches: [main]
+    branches: [main, next]
   workflow_dispatch:
     inputs:
       cauldron_commit:
