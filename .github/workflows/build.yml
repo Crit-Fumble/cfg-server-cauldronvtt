@@ -1,8 +1,14 @@
 name: Build + publish image
 
 # Builds cfg-server-cauldronvtt and publishes to ghcr.io.
-#   - main branch push → :latest + :main-<short-sha>
+#   - main branch push → :main + :main-<short-sha>   ⚠️ NOT :latest
 #   - tagged release (v*) → :<tag> + :latest
+#
+# ⚠️ `:latest` MOVES ONLY ON A `v*` TAG (2026-08-06). It is what core-server's
+# kind-image.ts pulls with `imagePull: always` for EVERY user container launch,
+# so while it tracked `main` a promotion shipped straight to users with no
+# release decision in between. Cutting a tag is that decision. `:main-<sha>`
+# stays as the inspection and rollback handle.
 #
 # Multi-arch: linux/amd64 only, matching the production host. cauldrond is
 # compiled from C in the build stage and would build fine on arm64, but there
@@ -56,7 +62,7 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
             type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build
         uses: docker/build-push-action@v6
