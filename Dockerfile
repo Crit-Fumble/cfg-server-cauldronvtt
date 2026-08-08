@@ -30,8 +30,8 @@
 # Pinned to the v4.0 tag's commit, NOT the tag and NOT a tarball checksum:
 # GitLab's auto-generated archives are not byte-stable, so a sha256 pin on
 # /-/archive/ would spuriously fail. A commit SHA is immutable; a tag is not.
-ARG CAULDRON_COMMIT=c5606f1c451349e11db0a7004567f0076078286d
-ARG CAULDRON_VERSION=4.0
+ARG CAULDRON_COMMIT=e7217c10a45916d703d962a894c8902f6e1c2402
+ARG CAULDRON_VERSION=4.1
 
 # ── Build stage: fetch upstream + compile the websocket daemon ───────────────
 FROM alpine:3.21 AS build
