@@ -65,12 +65,24 @@ RUN tar xzf src/extra/cauldrond.tar.gz -C /build && \
 # ── Runtime image ───────────────────────────────────────────────────────────
 FROM alpine:3.21
 
+# Both re-declared here: an ARG from an earlier stage is out of scope after
+# FROM, and an undeclared ${VAR} expands to empty — a silently blank label.
 ARG CAULDRON_VERSION
+ARG CAULDRON_COMMIT
 LABEL org.opencontainers.image.title="cfg-server-cauldronvtt"
 LABEL org.opencontainers.image.description="Crit-Fumble Cauldron VTT server container"
 LABEL org.opencontainers.image.source="https://github.com/Crit-Fumble/cfg-server-cauldronvtt"
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
+# ⚠️ `org.opencontainers.image.version` does NOT survive to the published image:
+# docker/metadata-action emits its own OCI label set and `--label` last-wins, so
+# the release workflow overwrites this with the git tag (v0.1.0). Auditing "what
+# upstream is in here?" via the OCI label therefore reads back OUR tag. Kept for
+# `docker build` users, who do get the real value; the cfg.* labels below are the
+# ones that survive publishing because the metadata action never emits that
+# namespace. Verified against the published :latest on 2026-08-08.
 LABEL org.opencontainers.image.version="${CAULDRON_VERSION}"
+LABEL cfg.upstream.version="${CAULDRON_VERSION}"
+LABEL cfg.upstream.commit="${CAULDRON_COMMIT}"
 
 # bash is not cosmetic: the supervisor uses `wait -n` to exit as soon as ANY
 # managed process dies, so Docker's restart policy can do its job. busybox ash
