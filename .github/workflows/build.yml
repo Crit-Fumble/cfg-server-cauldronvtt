@@ -23,9 +23,9 @@ on:
   workflow_dispatch:
     inputs:
       cauldron_commit:
-        description: 'Upstream Cauldron commit SHA to pin (default: v4.0)'
+        description: 'Upstream Cauldron commit SHA to pin (default: v4.1)'
         required: false
-        default: 'c5606f1c451349e11db0a7004567f0076078286d'
+        default: 'e7217c10a45916d703d962a894c8902f6e1c2402'
 
 permissions:
   contents: read
@@ -71,8 +71,10 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: cfg-server-cauldronvtt:ci
+          # ⚠️ The fallback below overrides the Dockerfile ARG on every non-dispatch
+          # build — tag builds included. Keep it in sync with Dockerfile CAULDRON_COMMIT.
           build-args: |
-            CAULDRON_COMMIT=${{ github.event.inputs.cauldron_commit || 'c5606f1c451349e11db0a7004567f0076078286d' }}
+            CAULDRON_COMMIT=${{ github.event.inputs.cauldron_commit || 'e7217c10a45916d703d962a894c8902f6e1c2402' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -157,7 +159,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # ⚠️ The fallback below overrides the Dockerfile ARG on every non-dispatch
+          # build — tag builds included. Keep it in sync with Dockerfile CAULDRON_COMMIT.
           build-args: |
-            CAULDRON_COMMIT=${{ github.event.inputs.cauldron_commit || 'c5606f1c451349e11db0a7004567f0076078286d' }}
+            CAULDRON_COMMIT=${{ github.event.inputs.cauldron_commit || 'e7217c10a45916d703d962a894c8902f6e1c2402' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
