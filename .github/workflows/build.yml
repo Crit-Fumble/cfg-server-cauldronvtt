@@ -23,9 +23,9 @@ on:
   workflow_dispatch:
     inputs:
       cauldron_commit:
-        description: 'Upstream Cauldron commit SHA to pin (default: v4.1)'
+        description: 'Override the Dockerfile pin for an ad-hoc build (40-char commit SHA). Leave EMPTY to build the pinned commit.'
         required: false
-        default: 'e7217c10a45916d703d962a894c8902f6e1c2402'
+        default: ''
 
 permissions:
   contents: read
@@ -53,6 +53,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ⛔ THE DOCKERFILE ARG IS THE ONLY HOME FOR THIS COMMIT. Both build steps
+      # below used to restate it as an inline `|| '<sha>'` fallback that OVERRODE
+      # the Dockerfile on every non-dispatch build, tag builds included — three
+      # copies of one value, and upstream-watch can only ever write the Dockerfile
+      # (the fleet App has no `workflows` permission). They happened to agree; the
+      # sibling repo's did not, and cfg-server-codeserver published :latest built
+      # from 4.131.0 under a LABEL claiming 4.133.0 with nothing going red.
+      - name: Resolve Cauldron commit
+        id: version
+        run: |
+          set -euo pipefail
+          requested='${{ github.event.inputs.cauldron_commit }}'
+          if [ -z "$requested" ]; then
+            resolved=$(sed -nE 's/^ARG CAULDRON_COMMIT=(.*)$/\1/p' Dockerfile | head -1)
+          else
+            resolved="$requested"
+          fi
+          # A renamed/removed ARG must fail loudly, never check out an empty ref.
+          echo "$resolved" | grep -qE '^[0-9a-f]{40}$' \
+            || { echo "::error::resolved Cauldron commit '$resolved' is not a 40-char SHA — is ARG CAULDRON_COMMIT still in the Dockerfile?"; exit 1; }
+          echo "cauldron_commit=$resolved" >> "$GITHUB_OUTPUT"
+          echo "Resolved Cauldron commit: $resolved"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -71,10 +94,8 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: cfg-server-cauldronvtt:ci
-          # ⚠️ The fallback below overrides the Dockerfile ARG on every non-dispatch
-          # build — tag builds included. Keep it in sync with Dockerfile CAULDRON_COMMIT.
           build-args: |
-            CAULDRON_COMMIT=${{ github.event.inputs.cauldron_commit || 'e7217c10a45916d703d962a894c8902f6e1c2402' }}
+            CAULDRON_COMMIT=${{ steps.version.outputs.cauldron_commit }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -92,7 +113,7 @@ jobs:
             cfg-server-cauldronvtt:ci
 
           echo "::group::wait for HTTP"
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if [ "$(docker inspect -f '{{.State.Status}}' cauldron-ci)" != "running" ]; then
               echo "container exited: $(docker inspect -f '{{.State.ExitCode}}' cauldron-ci)"
               docker logs cauldron-ci; exit 1
@@ -138,12 +159,25 @@ jobs:
             -v /tmp/cauldron-ci:/data \
             -e CAULDRON_ADMIN_PASSWORD=ci-smoke-test \
             cfg-server-cauldronvtt:ci
-          for i in $(seq 1 60); do
-            curl -sf -o /dev/null http://127.0.0.1:8090/ && break
-            sleep 2
+          # ⚠️ WAIT FOR THE THING BEING ASSERTED, NOT A PROXY FOR IT. This polled
+          # HTTP and then grepped the logs ONCE — two different signals, so the
+          # grep could fire before the entrypoint's line reached `docker logs`.
+          # It did: a PR run failed with "seed guard did not fire" and printed the
+          # very string it had just missed, 14ms later in its own dump. Re-running
+          # the identical commit went green — a race, not a defect.
+          for _ in $(seq 1 60); do
+            docker logs cauldron-ci 2>&1 | grep -q 'already provisioned' && break
+            sleep 1
           done
           docker logs cauldron-ci 2>&1 | grep -q 'already provisioned' \
             || { echo "seed guard did not fire — schema may have been re-imported"; docker logs cauldron-ci; exit 1; }
+          # ⛔ AND THIS IS NOW AN ASSERTION. The old HTTP loop had no failure
+          # branch: if curl never succeeded it simply fell through after 120s and
+          # the step carried on, so "the replaced container serves HTTP" was
+          # waited for but never actually PROVEN. A wait that cannot fail is not a
+          # check — the same empty-output-parses-as-clean shape C7 exists to stop.
+          curl -sf -o /dev/null --retry 60 --retry-delay 1 --retry-connrefused http://127.0.0.1:8090/ \
+            || { echo "replaced container never served HTTP"; docker logs cauldron-ci; exit 1; }
 
           echo "--- idle footprint (must fit the nano tier: 512 MB) ---"
           docker stats --no-stream --format '{{.MemUsage}}' cauldron-ci
@@ -159,9 +193,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # ⚠️ The fallback below overrides the Dockerfile ARG on every non-dispatch
-          # build — tag builds included. Keep it in sync with Dockerfile CAULDRON_COMMIT.
           build-args: |
-            CAULDRON_COMMIT=${{ github.event.inputs.cauldron_commit || 'e7217c10a45916d703d962a894c8902f6e1c2402' }}
+            CAULDRON_COMMIT=${{ steps.version.outputs.cauldron_commit }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
