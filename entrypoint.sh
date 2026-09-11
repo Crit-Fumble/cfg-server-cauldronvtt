@@ -167,8 +167,17 @@ set_admin_password() {
 
   [ -n "$hash" ] || die "password hashing produced an empty result"
 
+  # ⛔ status MUST be 2. Banshee's constants (banshee.php): USER_STATUS_DISABLED
+  # = 0, USER_STATUS_CHANGEPWD = 1, USER_STATUS_ACTIVE = 2 — and its login query
+  # is `... where (username=%s or email=%s) and status != USER_STATUS_DISABLED`
+  # (libraries/banshee/core/user.php:138), so a status-0 row is never FOUND and
+  # every login answers "Login incorrect" no matter the password. Upstream's dump
+  # seeds the admin as 0 because it expects /setup to activate it; this used to
+  # copy that and re-disable the admin on EVERY start (cs#349, found 2026-09-11 —
+  # nobody had ever logged in to a hosted Cauldron). Not 1: the platform derives
+  # and re-applies the password each boot, so a forced change would be undone.
   mariadb --socket="$SOCKET" "$DB_NAME" <<-SQL
-	UPDATE users SET password = '${hash}', email = '${ADMIN_EMAIL}', status = 0
+	UPDATE users SET password = '${hash}', email = '${ADMIN_EMAIL}', status = 2
 	WHERE username = '${ADMIN_USER}';
 	SQL
   log "admin password set for '${ADMIN_USER}'"
