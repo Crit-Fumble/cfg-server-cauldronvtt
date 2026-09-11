@@ -165,11 +165,20 @@ jobs:
           # It did: a PR run failed with "seed guard did not fire" and printed the
           # very string it had just missed, 14ms later in its own dump. Re-running
           # the identical commit went green — a race, not a defect.
+          # ⛔ NOT `grep -q` here. This step runs under `set -o pipefail`, and
+          # `grep -q` exits on the FIRST match while `docker logs` is still
+          # writing (the first container was `rm -f`'d, so MariaDB prints crash
+          # recovery on the restart) — the writer takes SIGPIPE, the pipeline
+          # reports 141, and the `||` branch declared "seed guard did not fire"
+          # over a log that visibly contained the line (run 34596255028,
+          # 2026-09-11: fired 2.4s into a 60s wait, log dump had the text).
+          # Reproduced locally: `producer | grep -q x` → 141; `producer | grep x
+          # >/dev/null` → 0. A grep without -q reads to EOF and never SIGPIPEs.
           for _ in $(seq 1 60); do
-            docker logs cauldron-ci 2>&1 | grep -q 'already provisioned' && break
+            docker logs cauldron-ci 2>&1 | grep 'already provisioned' >/dev/null && break
             sleep 1
           done
-          docker logs cauldron-ci 2>&1 | grep -q 'already provisioned' \
+          docker logs cauldron-ci 2>&1 | grep 'already provisioned' >/dev/null \
             || { echo "seed guard did not fire — schema may have been re-imported"; docker logs cauldron-ci; exit 1; }
           # ⛔ AND THIS IS NOW AN ASSERTION. The old HTTP loop had no failure
           # branch: if curl never succeeded it simply fell through after 120s and
