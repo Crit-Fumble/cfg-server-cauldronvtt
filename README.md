@@ -68,9 +68,11 @@ The database password is **generated in-container** on first boot and persisted 
 It is deliberately not an env var: nothing outside the container can reach MariaDB (it listens on a
 unix socket only, `skip-networking`), so an env var would only leak it into `docker inspect`.
 
-Upstream seeds the admin account with the literal string `none` as its password — not a valid hash,
-so the account cannot be logged into until `CAULDRON_ADMIN_PASSWORD` is applied. That is a safe
-default and the entrypoint preserves it.
+Upstream seeds the admin account with the literal string `none` as its password — not a valid hash —
+**and** with `status = 0`, which Banshee defines as `USER_STATUS_DISABLED` (its login query excludes
+disabled rows). Either alone keeps the account unusable. The entrypoint applies
+`CAULDRON_ADMIN_PASSWORD` **and** sets `status = 2` (`USER_STATUS_ACTIVE`) on every boot; until v0.1.3
+it re-wrote `status = 0`, so no derived credential had ever been able to log in (cs#349).
 
 ### Volume
 

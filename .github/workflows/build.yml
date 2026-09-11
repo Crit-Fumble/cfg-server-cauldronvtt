@@ -124,7 +124,11 @@ jobs:
           echo "::endgroup::"
 
           echo "--- the app renders (not a 500) ---"
-          curl -sf http://127.0.0.1:8090/ | grep -qi 'Cauldron' \
+          # No `grep -q` under pipefail: on an early match grep would close the pipe
+          # while curl is still writing → curl exit 23 → a rendered homepage reported
+          # as "did not render" (same mechanism as the seed guard, PR #10). The body
+          # is small enough that this has not tripped, but the fix is free.
+          curl -sf http://127.0.0.1:8090/ | grep -i 'Cauldron' >/dev/null \
             || { echo "homepage did not render"; docker logs cauldron-ci; exit 1; }
 
           echo "--- the websocket upgrades through nginx to cauldrond ---"
