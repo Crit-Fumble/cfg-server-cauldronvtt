@@ -85,7 +85,7 @@ disabled rows). Either alone keeps the account unusable. The entrypoint applies
 
 ## Sizing
 
-Fits the **`nano`** tier (0.25 thread / 512 MB). Measured idle on 2026-07-19: **80 MiB**.
+Fits the **`nano`** tier (0.25 thread / 512 MB). Measured idle: **80 MiB**.
 
 Two choices in the image earn that, and both should be understood before changing them:
 
