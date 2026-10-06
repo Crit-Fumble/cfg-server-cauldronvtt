@@ -21,19 +21,18 @@ Four processes in one container, supervised by `entrypoint.sh` under `tini`:
 | **MariaDB** | Banshee ships exactly one DB driver — `mysqli` — so this is not optional |
 | **cauldrond** | the realtime daemon (wsServer), listening on `127.0.0.1:2001` |
 
-They share one container because `KindAdapter.provision()` returns a single `ServerHandle`. A
-per-install database sidecar is precisely the pattern the Spacebar pivot discarded — see
-`docs/agent/spacebar-shared-platform.md` in the dev-tools repo.
+They share one container because `KindAdapter.provision()` returns a single `ServerHandle`.
 
-**One exposed port (80).** nginx proxies the websocket internally, so the platform's TLS terminator
-needs exactly one upstream.
+**One routed port (80).** nginx proxies the websocket internally, so the platform's TLS terminator
+needs exactly one upstream. Port `8080` serves only nginx `stub_status`, published to the Docker host
+for core-server's activity probe and never routed by Caddy.
 
 ## Upstream is fetched, not vendored
 
-The Dockerfile clones upstream at build time pinned to a **commit SHA**, matching how
-`cfg-server-terraria` fetches the official server zip.
+The Dockerfile clones upstream at build time pinned to a **commit SHA**.
 
-Pinned to `c5606f1c451349e11db0a7004567f0076078286d` (tag `v4.0`, 2025-10-15).
+The pin lives only in the Dockerfile (`ARG CAULDRON_COMMIT` + `CAULDRON_VERSION`) — read it there
+rather than restating it here.
 
 > Pin the commit, never the tag or an archive checksum. Tags are mutable, and GitLab's
 > `/-/archive/` tarballs are **not byte-stable** — a `sha256` pin on one will fail spuriously.
@@ -71,8 +70,7 @@ unix socket only, `skip-networking`), so an env var would only leak it into `doc
 Upstream seeds the admin account with the literal string `none` as its password — not a valid hash —
 **and** with `status = 0`, which Banshee defines as `USER_STATUS_DISABLED` (its login query excludes
 disabled rows). Either alone keeps the account unusable. The entrypoint applies
-`CAULDRON_ADMIN_PASSWORD` **and** sets `status = 2` (`USER_STATUS_ACTIVE`) on every boot; until v0.1.3
-it re-wrote `status = 0`, so no derived credential had ever been able to log in (cs#349).
+`CAULDRON_ADMIN_PASSWORD` **and** sets `status = 2` (`USER_STATUS_ACTIVE`) on every boot.
 
 ### Volume
 
