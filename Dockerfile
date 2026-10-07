@@ -4,8 +4,8 @@
 # tabletop. Unlike Terraria/Factorio this is not a single binary: Cauldron needs
 # a webserver, PHP, a MySQL-compatible database, and its own websocket daemon.
 # All four run in ONE container because KindAdapter.provision() returns a single
-# ServerHandle — a per-install DB sidecar is exactly the pattern the Spacebar
-# pivot discarded (docs/agent/spacebar-shared-platform.md).
+# ServerHandle — a per-install DB sidecar is exactly the pattern the platform
+# rejects (docs/agent/spacebar-shared-platform.md).
 #
 # Upstream is NOT vendored — it is fetched at build time pinned to a commit, the
 # same shape as cfg-server-terraria fetching the official server zip. That keeps
@@ -27,9 +27,10 @@
 # CFG-hosted: core-server provisions one container per user installation via the
 # Server Manager kind-registry (kinds/cauldronvtt.ts → services/cauldronvtt/launch.ts).
 
-# Pinned to the v4.0 tag's commit, NOT the tag and NOT a tarball checksum:
-# GitLab's auto-generated archives are not byte-stable, so a sha256 pin on
-# /-/archive/ would spuriously fail. A commit SHA is immutable; a tag is not.
+# Pinned to the commit of the CAULDRON_VERSION release tag, NOT the tag and NOT
+# a tarball checksum: GitLab's auto-generated archives are not byte-stable, so a
+# sha256 pin on /-/archive/ would spuriously fail. A commit SHA is immutable; a
+# tag is not.
 ARG CAULDRON_COMMIT=e7217c10a45916d703d962a894c8902f6e1c2402
 ARG CAULDRON_VERSION=4.1
 
@@ -75,11 +76,11 @@ LABEL org.opencontainers.image.source="https://github.com/Crit-Fumble/cfg-server
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
 # ⚠️ `org.opencontainers.image.version` does NOT survive to the published image:
 # docker/metadata-action emits its own OCI label set and `--label` last-wins, so
-# the release workflow overwrites this with the git tag (v0.1.0). Auditing "what
-# upstream is in here?" via the OCI label therefore reads back OUR tag. Kept for
-# `docker build` users, who do get the real value; the cfg.* labels below are the
-# ones that survive publishing because the metadata action never emits that
-# namespace. Verified against the published :latest on 2026-08-08.
+# the release workflow overwrites this with the git tag (e.g. v0.1.0). Auditing
+# "what upstream is in here?" via the OCI label therefore reads back OUR tag. Kept
+# for `docker build` users, who do get the real value; the cfg.* labels below are
+# the ones that survive publishing because the metadata action never emits that
+# namespace.
 LABEL org.opencontainers.image.version="${CAULDRON_VERSION}"
 LABEL cfg.upstream.version="${CAULDRON_VERSION}"
 LABEL cfg.upstream.commit="${CAULDRON_COMMIT}"

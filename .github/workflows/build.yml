@@ -6,8 +6,8 @@ name: Build + publish image
 #
 # ⚠️ `:latest` MOVES ONLY ON A `v*` TAG (2026-08-06). It is what core-server's
 # kind-image.ts pulls with `imagePull: always` for EVERY user container launch,
-# so while it tracked `main` a promotion shipped straight to users with no
-# release decision in between. Cutting a tag is that decision. `:main-<sha>`
+# so tracking `main` would ship a promotion straight to users with no release
+# decision in between. Cutting a tag is that decision. `:main-<sha>`
 # stays as the inspection and rollback handle.
 #
 # Multi-arch: linux/amd64 only, matching the production host. cauldrond is
@@ -53,13 +53,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ⛔ THE DOCKERFILE ARG IS THE ONLY HOME FOR THIS COMMIT. Both build steps
-      # below used to restate it as an inline `|| '<sha>'` fallback that OVERRODE
-      # the Dockerfile on every non-dispatch build, tag builds included — three
-      # copies of one value, and upstream-watch can only ever write the Dockerfile
-      # (the fleet App has no `workflows` permission). They happened to agree; the
-      # sibling repo's did not, and cfg-server-codeserver published :latest built
-      # from 4.131.0 under a LABEL claiming 4.133.0 with nothing going red.
+      # ⛔ THE DOCKERFILE ARG IS THE ONLY HOME FOR THIS COMMIT. Never restate it in
+      # this workflow (e.g. an inline `|| '<sha>'` fallback in the build steps): a
+      # copy here OVERRIDES the Dockerfile on every non-dispatch build, tag builds
+      # included, and upstream-watch can only ever write the Dockerfile (the fleet
+      # App has no `workflows` permission) — so the copies drift and :latest ships
+      # a build its LABEL does not describe, with nothing going red.
       - name: Resolve Cauldron commit
         id: version
         run: |
@@ -100,9 +99,9 @@ jobs:
           cache-to: type=gha,mode=max
 
       # A green build proves nothing here — the image has four processes that
-      # must come up in order, and the failure modes we have already hit
-      # (SIGPIPE in the entrypoint, a missing www-data account) all produced a
-      # perfectly successful build. Boot it.
+      # must come up in order, and its known failure modes (SIGPIPE in the
+      # entrypoint, a missing www-data account) all produce a perfectly
+      # successful build. Boot it.
       - name: Smoke test — boot, serve, upgrade, persist
         run: |
           set -euo pipefail
@@ -126,8 +125,8 @@ jobs:
           echo "--- the app renders (not a 500) ---"
           # No `grep -q` under pipefail: on an early match grep would close the pipe
           # while curl is still writing → curl exit 23 → a rendered homepage reported
-          # as "did not render" (same mechanism as the seed guard, PR #10). The body
-          # is small enough that this has not tripped, but the fix is free.
+          # as "did not render" (same mechanism as the seed guard below). The body
+          # is small, but avoiding the trap is free.
           curl -sf http://127.0.0.1:8090/ | grep -i 'Cauldron' >/dev/null \
             || { echo "homepage did not render"; docker logs cauldron-ci; exit 1; }
 
@@ -163,32 +162,30 @@ jobs:
             -v /tmp/cauldron-ci:/data \
             -e CAULDRON_ADMIN_PASSWORD=ci-smoke-test \
             cfg-server-cauldronvtt:ci
-          # ⚠️ WAIT FOR THE THING BEING ASSERTED, NOT A PROXY FOR IT. This polled
-          # HTTP and then grepped the logs ONCE — two different signals, so the
-          # grep could fire before the entrypoint's line reached `docker logs`.
-          # It did: a PR run failed with "seed guard did not fire" and printed the
-          # very string it had just missed, 14ms later in its own dump. Re-running
-          # the identical commit went green — a race, not a defect.
+          # ⚠️ WAIT FOR THE THING BEING ASSERTED, NOT A PROXY FOR IT. Polling HTTP
+          # and then grepping the logs ONCE uses two different signals, so the grep
+          # can fire before the entrypoint's line reaches `docker logs` — a race
+          # that fails with "seed guard did not fire" and then prints the very
+          # string it missed in its own dump.
           # ⛔ NOT `grep -q` here. This step runs under `set -o pipefail`, and
           # `grep -q` exits on the FIRST match while `docker logs` is still
           # writing (the first container was `rm -f`'d, so MariaDB prints crash
           # recovery on the restart) — the writer takes SIGPIPE, the pipeline
-          # reports 141, and the `||` branch declared "seed guard did not fire"
-          # over a log that visibly contained the line (run 34596255028,
-          # 2026-09-11: fired 2.4s into a 60s wait, log dump had the text).
-          # Reproduced locally: `producer | grep -q x` → 141; `producer | grep x
-          # >/dev/null` → 0. A grep without -q reads to EOF and never SIGPIPEs.
+          # reports 141, and the `||` branch declares "seed guard did not fire"
+          # over a log that visibly contains the line. `producer | grep -q x`
+          # → 141; `producer | grep x >/dev/null` → 0. A grep without -q reads to
+          # EOF and never SIGPIPEs.
           for _ in $(seq 1 60); do
             docker logs cauldron-ci 2>&1 | grep 'already provisioned' >/dev/null && break
             sleep 1
           done
           docker logs cauldron-ci 2>&1 | grep 'already provisioned' >/dev/null \
             || { echo "seed guard did not fire — schema may have been re-imported"; docker logs cauldron-ci; exit 1; }
-          # ⛔ AND THIS IS NOW AN ASSERTION. The old HTTP loop had no failure
-          # branch: if curl never succeeded it simply fell through after 120s and
-          # the step carried on, so "the replaced container serves HTTP" was
-          # waited for but never actually PROVEN. A wait that cannot fail is not a
-          # check — the same empty-output-parses-as-clean shape C7 exists to stop.
+          # ⛔ AND THIS IS AN ASSERTION, not just a wait: an HTTP loop with no
+          # failure branch falls through after its timeout and the step carries
+          # on, so "the replaced container serves HTTP" would be waited for but
+          # never actually PROVEN. A wait that cannot fail is not a check — the
+          # same empty-output-parses-as-clean shape C7 exists to stop.
           curl -sf -o /dev/null --retry 60 --retry-delay 1 --retry-connrefused http://127.0.0.1:8090/ \
             || { echo "replaced container never served HTTP"; docker logs cauldron-ci; exit 1; }
 
