@@ -12,7 +12,7 @@
 # Socket only. Nothing outside this container talks to this database, and not
 # listening on TCP removes the entire network attack surface.
 skip-networking
-socket = /run/mysqld/mysqld.sock
+socket = /tmp/cauldron/mysqld/mysqld.sock
 
 # InnoDB is the memory driver. 32M holds Cauldron's whole working set with room
 # to spare; the default (128M) is pure overhead here.

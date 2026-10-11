@@ -83,6 +83,12 @@ disabled rows). Either alone keeps the account unusable. The entrypoint applies
 /data/.dbpass      generated DB password (0600)
 ```
 
+Nothing in the container runs as root. It starts as `www-data` (uid 82), or as any uid given with
+`--user`, and every process in it runs as that one uid. `/data` must belong to it: the entrypoint
+never changes ownership, and it refuses to start on a mount it cannot write. The MariaDB `root`
+account has no password; it is reachable only through a unix socket in a directory that uid alone
+can enter. A volume created by an earlier, root-based image keeps working for the default user.
+
 ## Sizing
 
 Fits the **`nano`** tier (0.25 thread / 512 MB). Measured idle: **80 MiB**.
@@ -126,11 +132,16 @@ group, and a recompile if that ever changes.
 ```bash
 docker build -t cfg-server-cauldronvtt:local .
 
-docker run --rm -p 8090:80 \
+mkdir -p /tmp/cauldron-data
+docker run --rm -p 8090:80 --user "$(id -u):$(id -g)" \
   -v /tmp/cauldron-data:/data \
   -e CAULDRON_ADMIN_PASSWORD=changeme \
   cfg-server-cauldronvtt:local
 ```
+
+`--user` makes the container run as you, so it can write the directory you just made. Without it
+the container runs as uid 82, and on Linux the directory must then belong to 82
+(`sudo chown 82:82 /tmp/cauldron-data`).
 
 Then <http://localhost:8090> — sign in as `admin`.
 
