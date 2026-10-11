@@ -110,19 +110,39 @@ COPY rootfs/ /
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/sbin/cauldrond
 
-# public/files and public/resources are user-writable and must survive restarts,
-# so they are symlinked to /data by the entrypoint. Everything else in the tree
-# is read-only application code owned by root.
-#
-# /run/mysqld and /run/php are tmpfs-ish socket dirs recreated per boot.
-RUN mkdir -p /data /run/mysqld /run/php /run/nginx /tmp/php-sessions /var/lib/nginx/tmp && \
-    chown -R www-data:www-data /data /run/mysqld /run/php /run/nginx /tmp/php-sessions /var/lib/nginx && \
-    rm -rf /var/www/cauldron/public/files /var/www/cauldron/public/resources
+# Nothing in this image starts as root, and the uid it does start as may be one
+# the image has never heard of (`docker run --user`; the platform runs each
+# member's server as that member's own uid). So everything a process writes is
+# in one of two places:
+#   /data          the per-installation mount; it must belong to that uid.
+#   /tmp/cauldron  sockets, pid files, nginx temp, PHP sessions and the three
+#                  settings files the entrypoint fills in. It is NOT in the
+#                  image: the entrypoint makes it at start, mode 0700, owned by
+#                  the uid it runs as. The image adds nothing writable by
+#                  "anyone" to what its base already has.
+# The rest of the tree is read-only application code owned by root. The app
+# reads its settings and writes its uploads at fixed paths inside that tree, so
+# those paths are links made here, once, to where the real files will be:
+#   settings/{banshee,cauldron,public_modules}.conf → /tmp/cauldron/settings/
+#     (the shipped copies move to /usr/share/cauldron/settings as templates)
+#   public/files, public/resources → /data
+# php-fpm's own log goes to stderr: its default file is root's to write.
+RUN mkdir -p /data /usr/share/cauldron/settings && \
+    chown www-data:www-data /data && \
+    for f in banshee.conf cauldron.conf public_modules.conf; do \
+      mv "/var/www/cauldron/settings/$f" /usr/share/cauldron/settings/ && \
+      ln -s "/tmp/cauldron/settings/$f" "/var/www/cauldron/settings/$f" || exit 1; \
+    done && \
+    rm -rf /var/www/cauldron/public/files /var/www/cauldron/public/resources && \
+    ln -s /data/files /var/www/cauldron/public/files && \
+    ln -s /data/resources /var/www/cauldron/public/resources && \
+    sed -i 's|^;*error_log = .*|error_log = /dev/stderr|' /etc/php83/php-fpm.conf && \
+    grep -q '^error_log = /dev/stderr$' /etc/php83/php-fpm.conf
 
-# Runs as root so the entrypoint can chown the bind-mounted /data (whose host
-# ownership is set by the platform's per-install gid) before dropping each
-# managed process to www-data. Nothing listens as root: nginx workers, php-fpm
-# pools and cauldrond all run as uid 82.
+# uid 82. Docker takes HOME from /etc/passwd, where www-data's is a dir that
+# does not exist and a uid given with `--user` has no entry at all.
+USER www-data
+ENV HOME=/tmp
 EXPOSE 80/tcp
 # Activity-probe endpoint (nginx stub_status) — host-published, not Caddy-routed.
 EXPOSE 8080/tcp
