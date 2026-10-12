@@ -84,6 +84,9 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
 LABEL org.opencontainers.image.version="${CAULDRON_VERSION}"
 LABEL cfg.upstream.version="${CAULDRON_VERSION}"
 LABEL cfg.upstream.commit="${CAULDRON_COMMIT}"
+# An ARG is gone once the build ends. The entrypoint names the version in its "ready" line, so it
+# has to be in the running container's environment.
+ENV CAULDRON_VERSION="${CAULDRON_VERSION}"
 
 # bash is not cosmetic: the supervisor uses `wait -n` to exit as soon as ANY
 # managed process dies, so Docker's restart policy can do its job. busybox ash
