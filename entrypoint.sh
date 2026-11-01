@@ -134,12 +134,19 @@ start_mariadb() {
     mariadb-install-db --datadir="$MYSQL_DIR" --auth-root-authentication-method=normal --skip-test-db >/dev/null
   fi
 
-  log "starting MariaDB"
-  mariadbd --datadir="$MYSQL_DIR" &
+  run_mariadbd
+  root_is_admin || repair_root_login
+  root_is_admin || die "cannot sign in to the database in $MYSQL_DIR as root, even after moving root to a password login"
+}
+
+run_mariadbd() {
+  log "starting MariaDB${1:+ ($1)}"
+  mariadbd --datadir="$MYSQL_DIR" "$@" &
   MARIADB_PID=$!
 
   # Poll rather than sleep: first-boot InnoDB creation is much slower than a
-  # warm start, so any fixed sleep is either flaky or wasteful.
+  # warm start, so any fixed sleep is either flaky or wasteful. `ping` answers
+  # before any login, so it waits on the server, not on root.
   local waited=0
   until mariadb-admin --socket="$SOCKET" -uroot ping >/dev/null 2>&1; do
     kill -0 "$MARIADB_PID" 2>/dev/null || die "MariaDB exited during startup"
@@ -148,32 +155,51 @@ start_mariadb() {
     [ "$waited" -lt 90 ] || die "MariaDB did not become ready within 90s"
   done
   log "MariaDB ready after ${waited}s"
+}
 
-  # Who administers it. A datadir this image initialised: root, no password. One
-  # an earlier image initialised (as root, with socket auth): the `www-data`
-  # account that image created, which admits the OS user of that name — so such
-  # a volume keeps working for the default user. `ping` above answers before
-  # any login, so this is the first real one.
-  local candidate
-  for candidate in root "$(id -un 2>/dev/null || true)"; do
-    if [ -n "$candidate" ] && mariadb --socket="$SOCKET" -u"$candidate" -e 'select 1' >/dev/null 2>&1; then
-      DB_ADMIN="$candidate"
-      return
-    fi
-  done
-  die "cannot sign in to the database in $MYSQL_DIR as uid $(id -u) — a volume from an earlier image admits only the www-data user"
+# The account a `-uroot` login lands on. Asked rather than inferred from a
+# successful `select 1`: with no root@localhost account, an anonymous one
+# answers that login too, and cannot create the database.
+root_is_admin() {
+  [ "$(mariadb --socket="$SOCKET" -uroot -N -e 'select current_user()' 2>/dev/null)" = 'root@localhost' ]
+}
+
+# A datadir an earlier image initialised, as root with socket auth and a test
+# database, admits root only for the OS user `root`. This uid is not that user,
+# so start once without the grant tables (the socket stays the only way in, as
+# for root's empty password) and leave the accounts this image initialises:
+# root by password, no anonymous or www-data account, no test database.
+repair_root_login() {
+  log "the database admits no root login for uid $(id -u) — a volume an earlier image set up; moving root to a password login"
+  kill -TERM "$MARIADB_PID" || die "cannot stop MariaDB to repair its root login"
+  wait "$MARIADB_PID" || true
+  run_mariadbd --skip-grant-tables
+  mariadb --socket="$SOCKET" -uroot <<-SQL || die "repairing the root login failed"
+	FLUSH PRIVILEGES;
+	CREATE USER IF NOT EXISTS 'root'@'localhost';
+	ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('');
+	GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;
+	DELETE FROM mysql.global_priv WHERE User = '';
+	DROP USER IF EXISTS 'www-data'@'localhost';
+	DELETE FROM mysql.db WHERE User = 'PUBLIC' AND Db LIKE 'test%';
+	DROP DATABASE IF EXISTS test;
+	FLUSH PRIVILEGES;
+	SQL
+  mariadb-admin --socket="$SOCKET" -uroot shutdown || die "cannot stop MariaDB after repairing its root login"
+  wait "$MARIADB_PID" || true
+  run_mariadbd
 }
 
 seed_database() {
   local db_pass="$1"
 
-  if mariadb --socket="$SOCKET" -u"$DB_ADMIN" -e "use ${DB_NAME}; select 1 from users limit 1;" >/dev/null 2>&1; then
+  if mariadb --socket="$SOCKET" -uroot -e "use ${DB_NAME}; select 1 from users limit 1;" >/dev/null 2>&1; then
     log "database already provisioned — skipping seed"
     return
   fi
 
   log "creating database and importing schema"
-  mariadb --socket="$SOCKET" -u"$DB_ADMIN" <<-SQL
+  mariadb --socket="$SOCKET" -uroot <<-SQL
 	CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
 	CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${db_pass}';
 	GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
@@ -182,7 +208,7 @@ seed_database() {
 
   # Upstream's dump is self-sufficient: it seeds organisations, users, roles,
   # pages, menu, settings and rule_systems. There is no need to run /setup.
-  mariadb --socket="$SOCKET" -u"$DB_ADMIN" "$DB_NAME" < "$APP_DIR/database/mysql.sql"
+  mariadb --socket="$SOCKET" -uroot "$DB_NAME" < "$APP_DIR/database/mysql.sql"
   log "schema imported"
 }
 
@@ -206,7 +232,7 @@ set_admin_password() {
   # seeds the admin as 0 because it expects /setup to activate it; copying that
   # would re-disable the admin on EVERY start (cs#349). Not 1: the platform derives
   # and re-applies the password each boot, so a forced change would be undone.
-  mariadb --socket="$SOCKET" -u"$DB_ADMIN" "$DB_NAME" <<-SQL
+  mariadb --socket="$SOCKET" -uroot "$DB_NAME" <<-SQL
 	UPDATE users SET password = '${hash}', email = '${ADMIN_EMAIL}', status = 2
 	WHERE username = '${ADMIN_USER}';
 	SQL
@@ -220,7 +246,7 @@ shutdown() {
   [ -n "${CAULDROND_PID:-}" ] && kill -TERM "$CAULDROND_PID" 2>/dev/null || true
   [ -n "${PHPFPM_PID:-}" ] && kill -QUIT "$PHPFPM_PID" 2>/dev/null || true
   if [ -n "${MARIADB_PID:-}" ]; then
-    mariadb-admin --socket="$SOCKET" -u"${DB_ADMIN:-root}" shutdown >/dev/null 2>&1 || kill -TERM "$MARIADB_PID" 2>/dev/null || true
+    mariadb-admin --socket="$SOCKET" -uroot shutdown >/dev/null 2>&1 || kill -TERM "$MARIADB_PID" 2>/dev/null || true
     wait "$MARIADB_PID" 2>/dev/null || true
   fi
   exit 0

@@ -87,7 +87,9 @@ Nothing in the container runs as root. It starts as `www-data` (uid 82), or as a
 `--user`, and every process in it runs as that one uid. `/data` must belong to it: the entrypoint
 never changes ownership, and it refuses to start on a mount it cannot write. The MariaDB `root`
 account has no password; it is reachable only through a unix socket in a directory that uid alone
-can enter. A volume created by an earlier, root-based image keeps working for the default user.
+can enter. A volume created by an earlier, root-based image works for any uid: its first boot here
+moves that root to the same login and drops the anonymous and `www-data` accounts and the test
+database that image left.
 
 ## Sizing
 
