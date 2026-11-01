@@ -251,6 +251,63 @@ jobs:
           [ "$code" = 0 ] || { echo "stop exited $code, want 0"; docker logs cauldron-ci-anyuid; exit 1; }
           docker rm -f cauldron-ci-anyuid
 
+      # Prod's volumes were set up by the root-based image (v0.1.3 and before), whose
+      # MariaDB root admits only the OS user `root`. The platform hands each volume to its
+      # member's uid; booting one as that uid must keep its data, not crash-loop on the
+      # anonymous account that image left behind.
+      - name: Smoke test — a volume the root-based image set up
+        run: |
+          set -euo pipefail
+          legacy=ghcr.io/crit-fumble/cfg-server-cauldronvtt@sha256:ecc7f9d7633f3f7f61e2019083a430c7516cce46e463bf5c952706d4137365b9 # v0.1.3
+          wait_ready() {
+            for _ in $(seq 1 90); do
+              [ "$(docker inspect -f '{{.State.Status}}' "$1")" = running ] || { echo "$1 exited"; docker logs "$1"; exit 1; }
+              [ "$(docker logs "$1" 2>&1 | grep -c 'ready —')" -ge "$2" ] && return
+              sleep 2
+            done
+            echo "$1 never logged ready"; docker logs "$1"; exit 1
+          }
+
+          mkdir -p /tmp/cauldron-ci-legacy
+          docker run -d --name cauldron-ci-legacy -v /tmp/cauldron-ci-legacy:/data \
+            -e CAULDRON_ADMIN_PASSWORD=ci-smoke-test "$legacy"
+          wait_ready cauldron-ci-legacy 1
+          docker stop -t 30 cauldron-ci-legacy >/dev/null
+          docker rm -f cauldron-ci-legacy
+
+          sudo chown -R 61000:61000 /tmp/cauldron-ci-legacy
+          sudo chmod 0700 /tmp/cauldron-ci-legacy
+          docker run -d --name cauldron-ci-legacy -p 8092:80 --user 61000:61000 \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            -v /tmp/cauldron-ci-legacy:/data \
+            -e CAULDRON_ADMIN_PASSWORD=ci-smoke-test \
+            cfg-server-cauldronvtt:ci
+          wait_ready cauldron-ci-legacy 1
+          logs=$(docker logs cauldron-ci-legacy 2>&1)
+          printf '%s\n' "$logs" | grep 'moving root to a password login' >/dev/null \
+            || { echo "root was not repaired"; printf '%s\n' "$logs"; exit 1; }
+          printf '%s\n' "$logs" | grep 'already provisioned' >/dev/null \
+            || { echo "the legacy database was not found — it would be re-seeded"; printf '%s\n' "$logs"; exit 1; }
+          want=$(docker inspect -f '{{index .Config.Labels "cfg.upstream.version"}}' cfg-server-cauldronvtt:ci)
+          printf '%s\n' "$logs" | grep "ready — Cauldron VTT $want listening" >/dev/null \
+            || { echo "the ready line does not name Cauldron $want"; printf '%s\n' "$logs"; exit 1; }
+          # The ready line is logged as nginx is forked, a beat before it binds :80.
+          curl -sf --retry 30 --retry-delay 1 --retry-connrefused http://127.0.0.1:8092/ | grep -i 'Cauldron' >/dev/null \
+            || { echo "homepage did not render on the legacy volume"; docker logs cauldron-ci-legacy; exit 1; }
+          # What that image left beside root: anonymous and www-data accounts, a test database open to every account.
+          left=$(docker exec cauldron-ci-legacy mariadb --socket=/tmp/cauldron/mysqld/mysqld.sock -uroot -N -e "
+            select (select count(*) from mysql.global_priv where User in ('', 'www-data'))
+                 + (select count(*) from mysql.db where User = 'PUBLIC')
+                 + (select count(*) from information_schema.schemata where schema_name = 'test')")
+          [ "$left" = 0 ] || { echo "$left accounts, grants or databases from the earlier image remain"; exit 1; }
+
+          # The repair runs once: the next boot signs in as root straight away.
+          docker restart -t 30 cauldron-ci-legacy >/dev/null
+          wait_ready cauldron-ci-legacy 2
+          repairs=$(docker logs cauldron-ci-legacy 2>&1 | grep -c 'moving root to a password login' || true)
+          [ "$repairs" = 1 ] || { echo "root was repaired $repairs times, want 1"; exit 1; }
+          docker rm -f cauldron-ci-legacy
+
       - name: Push
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
