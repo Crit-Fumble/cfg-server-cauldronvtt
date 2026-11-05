@@ -284,6 +284,45 @@ provision_resources() {
   done
 }
 
+# ── php-fpm sizing ──────────────────────────────────────────────────────────
+# The shipped pool sets memory_limit for the nano tier (128M). A GM's map upload
+# decodes the whole image in one PHP worker: a 4096x4096 map takes about 64 MB,
+# an 8192x8192 one about 256 MB, and past the limit PHP dies mid-request with a
+# blank 500 (banshee/image.php). So the limit follows the container: the share
+# of the cgroup's memory limit left for php-fpm's children after the rest of the
+# stack (MariaDB, nginx, cauldrond: under 128 MB together), never below the
+# shipped 128M and never above 1024M, in 16M steps. nano stays at 128M, micro
+# gets 288M, small 640M, medium and up 1024M. With no cgroup limit (a plain
+# `docker run`) the shipped value stands.
+#
+# php-fpm's pool files live in the image, which this uid cannot edit, so the
+# shipped php-fpm.conf and www.conf are copied to $RUN_DIR/php and edited there,
+# the way write_config treats Banshee's files, and php-fpm starts on that copy.
+PHP_FPM_CONF="$RUN_DIR/php/php-fpm.conf"
+
+write_php_fpm_config() {
+  local dist_pool=/etc/php83/php-fpm.d/www.conf pool="$RUN_DIR/php/www.conf"
+  cp /etc/php83/php-fpm.conf "$PHP_FPM_CONF"
+  cp "$dist_pool" "$pool"
+  sed -i "s|^include=.*|include=${pool}|" "$PHP_FPM_CONF"
+  grep -q "^include=${pool}$" "$PHP_FPM_CONF" || die "could not point php-fpm.conf at $pool"
+
+  local limit_file=/sys/fs/cgroup/memory.max limit children shipped mib
+  [ -r "$limit_file" ] || limit_file=/sys/fs/cgroup/memory/memory.limit_in_bytes
+  limit=$(cat "$limit_file" 2>/dev/null || echo max)
+  case "$limit" in ''|*[!0-9]*) log "php-fpm memory_limit stays at the shipped value (no cgroup memory limit)"; return ;; esac
+
+  children=$(sed -n 's/^pm\.max_children *= *\([0-9]*\).*/\1/p' "$pool")
+  shipped=$(sed -n 's/^php_admin_value\[memory_limit\] *= *\([0-9]*\)M.*/\1/p' "$pool")
+  [ -n "$children" ] && [ -n "$shipped" ] || die "www.conf no longer carries pm.max_children and memory_limit in the expected form"
+  mib=$(( (limit / 1048576 - 128) / children / 16 * 16 ))
+  [ "$mib" -gt "$shipped" ] || mib=$shipped
+  [ "$mib" -le 1024 ] || mib=1024
+  sed -i "s|^php_admin_value\[memory_limit\] *=.*|php_admin_value[memory_limit] = ${mib}M|" "$pool"
+  grep -q "^php_admin_value\[memory_limit\] = ${mib}M$" "$pool" || die "could not set memory_limit in $pool"
+  log "php-fpm memory_limit ${mib}M (container memory $((limit / 1048576)) MB, ${children} children)"
+}
+
 # ── Shutdown ────────────────────────────────────────────────────────────────
 shutdown() {
   log "shutting down"
@@ -322,8 +361,9 @@ write_config "$DB_PASS"
 set_admin_password
 provision_resources
 
+write_php_fpm_config
 log "starting php-fpm"
-php-fpm83 --nodaemonize &
+php-fpm83 --nodaemonize --fpm-config "$PHP_FPM_CONF" &
 PHPFPM_PID=$!
 
 log "starting cauldrond (websocket, 127.0.0.1:2001 — proxied by nginx)"
