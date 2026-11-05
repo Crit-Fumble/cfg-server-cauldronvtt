@@ -116,11 +116,14 @@ those trees; an Apache + mod_php deployment would execute a `.php` dropped there
 generic PHP handler.
 
 **Realtime isolation is client-side only — this is inherent to upstream.** `cauldrond` has no
-authentication and no rooms: `ws_sendframe()` fans every frame to every client on the port, and
-`adventure.js` filters on arrival. Per-container hosting makes the broadcast domain exactly one
-user's group, which resolves cross-tenant leakage. It does **not** fix intra-install visibility:
-a player with devtools can see DM-private frames — hidden tokens, unrevealed fog, secret rolls,
-whispers — inside their own install.
+authentication. A client joins a group by sending a group key, and each frame goes to every other
+client in the sender's group; `adventure.js` filters on arrival. The group key is an HMAC of the
+adventure's title keyed by the site secret (`secret_website_code`), which the entrypoint sets on
+first boot. Upstream's dump leaves it empty, and an empty secret makes every group key computable
+from a title. Per-container hosting makes the broadcast domain exactly one user's install, which
+resolves cross-tenant leakage. It does **not** fix visibility inside an adventure: a player with
+devtools can see DM-private frames — hidden tokens, unrevealed fog, secret rolls, whispers — in
+their own adventure's group.
 
 This matches what a user gets self-hosting Cauldron, and it matches Cauldron's own positioning
 ("groups who trust each other"). **It differs from our Foundry offering and must be stated plainly
@@ -160,8 +163,10 @@ curl -i --max-time 4 --http1.1 \
 ## Upgrading upstream
 
 1. Bump `CAULDRON_COMMIT` (and `CAULDRON_VERSION`) in the Dockerfile to the new tag's commit.
-2. Rebuild and boot against an **empty** `/data` — confirm the schema imports and the setup module
-   is disabled.
+2. Rebuild and boot against an **empty** `/data` — confirm the schema imports, the setup module
+   is disabled, the log sets the resources key and the site secret, and a token uploaded in the
+   Vault lands under `/data/resources/<key>/tokens/`. The entrypoint reads the resource
+   directories from upstream's `USER_SUB_DIRECTORIES`, so a new type needs no change here.
 3. Boot against an **existing** `/data` — confirm the seed guard logs `already provisioned` and no
    data is lost. Upstream ships no migration tooling, so a schema change between releases is
    something you must check for by hand.

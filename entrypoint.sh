@@ -206,8 +206,10 @@ seed_database() {
 	FLUSH PRIVILEGES;
 	SQL
 
-  # Upstream's dump is self-sufficient: it seeds organisations, users, roles,
-  # pages, menu, settings and rule_systems. There is no need to run /setup.
+  # Upstream's dump seeds organisations, users, roles, pages, menu, settings and
+  # rule_systems. What /setup would still do is the admin login
+  # (set_admin_password) and the resources key and site secret
+  # (provision_resources), which the dump leaves empty.
   mariadb --socket="$SOCKET" -uroot "$DB_NAME" < "$APP_DIR/database/mysql.sql"
   log "schema imported"
 }
@@ -237,6 +239,49 @@ set_admin_password() {
 	WHERE username = '${ADMIN_USER}';
 	SQL
   log "admin password set for '${ADMIN_USER}'"
+}
+
+# 32 alphanumerics, the shape of upstream's random_string(32). Bounded input and a
+# `cut` that drains it, for the SIGPIPE reason given at the DB password below.
+random_key() { head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32; }
+
+# The resources half of upstream's /setup, which this image disables (write_config).
+# Its import step gives each organisation a resources_key and the site a
+# secret_website_code (models/setup.php import_sql), then makes
+# resources/<key>/<dir> for every USER_SUB_DIRECTORIES entry (create_directories).
+# The dump seeds both values empty. Without a key every vault upload path is
+# resources//tokens/ and the upload fails, so a new table can get no tokens or
+# maps. Without the secret, the websocket group key (an HMAC of the adventure
+# title keyed by that secret) is computable from the title alone, and cauldrond
+# admits any client that names a group to it. Only empty values are filled, so
+# an install that has a key or secret keeps it; the directories are re-made on
+# every boot, which also repairs one that went missing.
+provision_resources() {
+  local org key dir dirs
+  for org in $(mariadb --socket="$SOCKET" -uroot -N "$DB_NAME" -e "select id from organisations where resources_key = ''"); do
+    key=$(random_key)
+    [ "${#key}" -eq 32 ] || die "could not generate a resources key"
+    mariadb --socket="$SOCKET" -uroot "$DB_NAME" -e "update organisations set resources_key = '${key}' where id = ${org} and resources_key = ''"
+    log "set the resources key for organisation ${org}"
+  done
+
+  key=$(random_key)
+  [ "${#key}" -eq 32 ] || die "could not generate the site secret"
+  local set_secret="update settings set value = '${key}' where \`key\` = 'secret_website_code' and value = ''; select row_count()"
+  if [ "$(mariadb --socket="$SOCKET" -uroot -N "$DB_NAME" -e "$set_secret")" = 1 ]; then
+    log "set the site secret"
+  fi
+
+  # Read the list from the app, as set_admin_password reads the hash algorithm,
+  # so an upstream bump that adds a resource type cannot drift from a copy here.
+  dirs=$(php83 -r 'require "/var/www/cauldron/libraries/cauldron.php"; echo implode(" ", USER_SUB_DIRECTORIES);') \
+    || die "could not read the resource directories from the app"
+  [ -n "$dirs" ] || die "the app lists no resource directories"
+  for key in $(mariadb --socket="$SOCKET" -uroot -N "$DB_NAME" -e "select resources_key from organisations where resources_key != ''"); do
+    for dir in $dirs; do
+      mkdir -p "$DATA_DIR/resources/$key/$dir"
+    done
+  done
 }
 
 # ── Shutdown ────────────────────────────────────────────────────────────────
@@ -275,6 +320,7 @@ start_mariadb
 seed_database "$DB_PASS"
 write_config "$DB_PASS"
 set_admin_password
+provision_resources
 
 log "starting php-fpm"
 php-fpm83 --nodaemonize &
