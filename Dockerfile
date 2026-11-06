@@ -46,6 +46,14 @@ RUN git clone --no-checkout https://gitlab.com/hsleisink/cauldron.git src && \
     git -C src checkout --detach "$CAULDRON_COMMIT" && \
     rm -rf src/.git
 
+# The spectator page opens its websocket on `/` (public/js/spectate.js), where the table opens
+# it on `/websocket` (adventure.js), and nginx proxies only `/websocket` to cauldrond. Behind
+# a host that serves `/` itself, a spectator could never connect (#23). Point it at
+# `/websocket` too, and stop the build if upstream's line moves.
+RUN grep -F "+ ws_port + '/');" src/public/js/spectate.js >/dev/null && \
+    sed -i "s#+ ws_port + '/');#+ ws_port + '/websocket');#" src/public/js/spectate.js && \
+    grep -F "+ ws_port + '/websocket');" src/public/js/spectate.js >/dev/null
+
 # cauldrond ships as a tarball inside the repo. It is wsServer (GPL-3.0) with a
 # Cauldron-specific main(); CMakeLists bakes PORT/UID/GID in at compile time, so
 # they are set here rather than configured at runtime.
