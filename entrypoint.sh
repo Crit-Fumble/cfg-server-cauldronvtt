@@ -85,7 +85,7 @@ prepare_filesystem() {
   # again; one that belongs to anybody else is not used.
   mkdir -p -m 0700 "$RUN_DIR"
   [ -O "$RUN_DIR" ] || die "$RUN_DIR belongs to another uid"
-  mkdir -p -m 0700 "$RUN_DIR/mysqld" "$RUN_DIR/php" "$RUN_DIR/nginx" "$RUN_DIR/sessions" "$RUN_DIR/settings"
+  mkdir -p -m 0700 "$RUN_DIR/mysqld" "$RUN_DIR/php" "$RUN_DIR/nginx" "$RUN_DIR/sessions" "$RUN_DIR/settings" "$RUN_DIR/logfiles"
 }
 
 # ── Config templating ───────────────────────────────────────────────────────

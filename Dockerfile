@@ -118,8 +118,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/sbin/cauldrond
 # member's server as that member's own uid). So everything a process writes is
 # in one of two places:
 #   /data          the per-installation mount; it must belong to that uid.
-#   /tmp/cauldron  sockets, pid files, nginx temp, PHP sessions and the three
-#                  settings files the entrypoint fills in. It is NOT in the
+#   /tmp/cauldron  sockets, pid files, nginx temp, PHP sessions, Banshee's logs
+#                  and the settings files the entrypoint fills in. It is NOT in the
 #                  image: the entrypoint makes it at start, mode 0700, owned by
 #                  the uid it runs as. The image adds nothing writable by
 #                  "anyone" to what its base already has.
@@ -129,6 +129,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/sbin/cauldrond
 #   settings/{banshee,cauldron,public_modules}.conf → /tmp/cauldron/settings/
 #     (the shipped copies move to /usr/share/cauldron/settings as templates)
 #   public/files, public/resources → /data
+#   logfiles → /tmp/cauldron/logfiles. Banshee appends its action log there (each
+#     sign-in, among others), and its error handler prints a write it cannot make
+#     into the response, which ends a JSON answer with a PHP warning.
 # php-fpm's own log goes to stderr: its default file is root's to write.
 RUN mkdir -p /data /usr/share/cauldron/settings && \
     chown www-data:www-data /data && \
@@ -136,9 +139,10 @@ RUN mkdir -p /data /usr/share/cauldron/settings && \
       mv "/var/www/cauldron/settings/$f" /usr/share/cauldron/settings/ && \
       ln -s "/tmp/cauldron/settings/$f" "/var/www/cauldron/settings/$f" || exit 1; \
     done && \
-    rm -rf /var/www/cauldron/public/files /var/www/cauldron/public/resources && \
+    rm -rf /var/www/cauldron/public/files /var/www/cauldron/public/resources /var/www/cauldron/logfiles && \
     ln -s /data/files /var/www/cauldron/public/files && \
     ln -s /data/resources /var/www/cauldron/public/resources && \
+    ln -s /tmp/cauldron/logfiles /var/www/cauldron/logfiles && \
     sed -i 's|^;*error_log = .*|error_log = /dev/stderr|' /etc/php83/php-fpm.conf && \
     grep -q '^error_log = /dev/stderr$' /etc/php83/php-fpm.conf
 
