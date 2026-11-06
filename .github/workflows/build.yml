@@ -155,6 +155,10 @@ jobs:
             exit 1
           }
 
+          echo "--- the spectator page connects where the table does, /websocket (#23) ---"
+          docker exec cauldron-ci grep -F "+ ws_port + '/websocket');" /var/www/cauldron/public/js/spectate.js >/dev/null \
+            || { echo "spectate.js still opens its websocket elsewhere than /websocket"; exit 1; }
+
           echo "--- only index.php executes: uploads must not run as PHP ---"
           docker exec cauldron-ci sh -c 'echo "<?php echo 1337;" > /data/files/probe.php'
           body=$(curl -s http://127.0.0.1:8090/files/probe.php || true)
