@@ -62,6 +62,9 @@ headers from the image.
 | `CAULDRON_WEBSOCKET_PORT` | `443` | The port the **browser** connects to, not the daemon's |
 | `CAULDRON_DB_NAME` / `CAULDRON_DB_USER` | `cauldron` | |
 | `CAULDRON_ENABLE_MARKET` | `no` | Gates the adventure/map market |
+| `CAULDRON_EDGE_KEY` | — | The key the platform's edge signs its identity header with ([Sign-in](#sign-in)). Unset: password sign-in only |
+| `CAULDRON_ADMIN_CERT_SERIAL` | — | The host's serial, which signs the host in as the admin |
+| `CAULDRON_SEATS` | — | The members with a seat, one `<serial> <username> <full name>` line each. Unset: no account but the admin's is touched |
 
 The database password is **generated in-container** on first boot and persisted to `/data/.dbpass`.
 It is deliberately not an env var: nothing outside the container can reach MariaDB (it listens on a
@@ -71,6 +74,35 @@ Upstream seeds the admin account with the literal string `none` as its password 
 **and** with `status = 0`, which Banshee defines as `USER_STATUS_DISABLED` (its login query excludes
 disabled rows). Either alone keeps the account unusable. The entrypoint applies
 `CAULDRON_ADMIN_PASSWORD` **and** sets `status = 2` (`USER_STATUS_ACTIVE`) on every boot.
+
+### Sign-in
+
+Nobody types a password on a CFG-hosted server. Banshee has a client-certificate login: with
+`HTTPS` on and `TLS_CERT_SERIAL` matching an account's `cert_serial`, it signs that account in and
+makes its own session. No certificate reaches the container. The platform's edge vouches for the
+member instead, with one header on each request it forwards:
+
+```
+X-Cfg-Kind-Identity: v1.<serial>.<expires>.<mac>
+```
+
+`<mac>` is the hex HMAC-SHA256 of `v1.<serial>.<expires>` under `CAULDRON_EDGE_KEY`, and
+`<expires>` a Unix time at most five minutes ahead. `cfg-identity.php`, which php-fpm prepends to
+every PHP request, checks both and only then sets `TLS_CERT_SERIAL`. Without the key a header
+signs nobody in, so neither a client nor another container can forge one.
+
+The host signs in as the admin (`CAULDRON_ADMIN_CERT_SERIAL`). A member with a seat has an account
+of their own, a Player in the admin's group, which `cfg-seats.php` writes from `CAULDRON_SEATS` at
+every boot, before the app starts:
+
+- a seat with no account gets one, with no password that verifies;
+- a deactivated account whose seat is back is active again, characters and all (accounts match by
+  serial);
+- an account that carries a serial and is no longer a seat is deactivated, never deleted.
+
+Names, roles and characters are the host's to change, in Cauldron; the sync writes nothing else.
+A malformed list stops the boot. Self-registration is off: a registered visitor would start a
+group of their own on the host's server.
 
 ### Volume
 
@@ -171,3 +203,7 @@ curl -i --max-time 4 --http1.1 \
    data is lost. Upstream ships no migration tooling, so a schema change between releases is
    something you must check for by hand.
 4. Re-run the websocket check above; `cauldrond` is versioned independently inside the tarball.
+5. Confirm the sign-in still holds: Banshee's certificate login still reads `TLS_CERT_SERIAL` and
+   `users.cert_serial` (`models/banshee/login.php`, `user::login_ssl_auth`), and the `users` and
+   `user_role` columns `cfg-seats.php` writes are unchanged. The build's sign-in smoke test fails if
+   either moved.

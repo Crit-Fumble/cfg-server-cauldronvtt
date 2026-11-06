@@ -308,6 +308,56 @@ jobs:
           [ "$repairs" = 1 ] || { echo "root was repaired $repairs times, want 1"; exit 1; }
           docker rm -f cauldron-ci-legacy
 
+      # How the platform signs members in: an identity header its edge signs with the
+      # install's key, which cfg-identity.php turns into Banshee's certificate login, and
+      # the seat list cfg-seats.php writes at boot. A header signed with any other key
+      # signs nobody in.
+      - name: Smoke test — the platform's sign-in and seats
+        run: |
+          set -euo pipefail
+          key=$(openssl rand -hex 32)
+          ident() {
+            local exp=$(( $(date +%s) + 60 ))
+            local mac; mac=$(printf 'v1.%s.%s' "$1" "$exp" | openssl dgst -sha256 -hmac "${2:-$key}" -hex | awk '{print $NF}')
+            echo "v1.$1.$exp.$mac"
+          }
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          boot() {
+            docker rm -f cauldron-ci-seats >/dev/null 2>&1 || true
+            docker run -d --name cauldron-ci-seats -p 8093:80 -v /tmp/cauldron-ci-seats:/data \
+              -e CAULDRON_ADMIN_PASSWORD=ci-smoke-test -e CAULDRON_EDGE_KEY="$key" \
+              -e CAULDRON_ADMIN_CERT_SERIAL=1000001 -e CAULDRON_SEATS="$1" cfg-server-cauldronvtt:ci >/dev/null
+            for _ in $(seq 1 60); do
+              [ "$(docker inspect -f '{{.State.Status}}' cauldron-ci-seats)" = running ] \
+                || { echo "container exited"; docker logs cauldron-ci-seats; exit 1; }
+              curl -sf -o /dev/null http://127.0.0.1:8093/ && return 0
+              sleep 2
+            done
+            echo "never served HTTP"; docker logs cauldron-ci-seats; exit 1
+          }
+          mkdir -p /tmp/cauldron-ci-seats
+          sudo chown 82:82 /tmp/cauldron-ci-seats
+
+          boot "$(printf '2000002 seat-one Seat One\n3000003 seat-two Seat Two')"
+          body=$(curl -s -H "X-Cfg-Kind-Identity: $(ident 1000001)" 'http://127.0.0.1:8093/adventure?output=json')
+          case "$body" in '{"csrf_token":'*'}') ;; *) echo "the host did not sign in as the admin with a clean JSON answer: $body"; exit 1 ;; esac
+          [ "$(code -H "X-Cfg-Kind-Identity: $(ident 2000002)" 'http://127.0.0.1:8093/adventure?output=json')" = 200 ] \
+            || { echo "a seat did not sign in"; docker logs cauldron-ci-seats; exit 1; }
+          [ "$(code -H "X-Cfg-Kind-Identity: $(ident 2000002)" http://127.0.0.1:8093/vault/user)" = 403 ] \
+            || { echo "a seat reached the user admin"; exit 1; }
+          [ "$(code -H "X-Cfg-Kind-Identity: $(ident 1000001 "$(openssl rand -hex 32)")" 'http://127.0.0.1:8093/adventure?output=json')" = 401 ] \
+            || { echo "a header signed with another key signed someone in"; exit 1; }
+          [ "$(code http://127.0.0.1:8093/register)" = 404 ] || { echo "self-registration is still open"; exit 1; }
+
+          # A seat that is gone is deactivated at the next boot, and kept.
+          boot '2000002 seat-one Seat One'
+          [ "$(code -H "X-Cfg-Kind-Identity: $(ident 3000003)" 'http://127.0.0.1:8093/adventure?output=json')" = 401 ] \
+            || { echo "a dropped seat still signs in"; exit 1; }
+          [ "$(docker exec cauldron-ci-seats mariadb --socket=/tmp/cauldron/mysqld/mysqld.sock -uroot -N cauldron \
+                -e "select status from users where cert_serial = 3000003")" = 0 ] \
+            || { echo "the dropped seat's account is not deactivated"; exit 1; }
+          docker rm -f cauldron-ci-seats
+
       - name: Push
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
