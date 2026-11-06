@@ -39,6 +39,15 @@
 #                              443 behind the platform's TLS terminator.
 #   CAULDRON_DB_NAME/USER    — database name and user, both default 'cauldron'
 #   CAULDRON_ENABLE_MARKET   — 'yes'/'no', gates the adventure/map market
+#   CAULDRON_EDGE_KEY        — the key the platform's edge signs its identity
+#                              header with (cfg-identity.php). Unset: nobody signs
+#                              in that way, only with a password.
+#   CAULDRON_ADMIN_CERT_SERIAL — the host's serial, which signs the host in as the
+#                              admin through that header (cfg-seats.php)
+#   CAULDRON_SEATS           — the members who hold a seat, one
+#                              '<serial> <username> <full name>' line each; their
+#                              accounts are made, kept active or deactivated to
+#                              match at every boot (cfg-seats.php)
 
 set -euo pipefail
 
@@ -85,7 +94,7 @@ prepare_filesystem() {
   # again; one that belongs to anybody else is not used.
   mkdir -p -m 0700 "$RUN_DIR"
   [ -O "$RUN_DIR" ] || die "$RUN_DIR belongs to another uid"
-  mkdir -p -m 0700 "$RUN_DIR/mysqld" "$RUN_DIR/php" "$RUN_DIR/nginx" "$RUN_DIR/sessions" "$RUN_DIR/settings"
+  mkdir -p -m 0700 "$RUN_DIR/mysqld" "$RUN_DIR/php" "$RUN_DIR/nginx" "$RUN_DIR/sessions" "$RUN_DIR/settings" "$RUN_DIR/logfiles"
 }
 
 # ── Config templating ───────────────────────────────────────────────────────
@@ -121,6 +130,39 @@ write_config() {
     sed -i '/^setup$/d' "$modules"
     log "disabled the setup module"
   fi
+
+  # No self-registration: members get their accounts from the platform
+  # (cfg-seats.php), and the host makes any other in Cauldron's user admin.
+  # Registered, a visitor would start a group of their own on the host's server.
+  if grep -qx "register" "$modules"; then
+    sed -i '/^register$/d' "$modules"
+    log "disabled self-registration"
+  fi
+}
+
+# ── The platform's sign-in ──────────────────────────────────────────────────
+# cfg-identity.php reads the edge key from a file only this uid can read: php-fpm
+# hands its workers no environment.
+write_edge_key() {
+  local key_file="$RUN_DIR/edge.key"
+  rm -f "$key_file"
+  if [ -z "${CAULDRON_EDGE_KEY:-}" ]; then
+    log "no edge key: members sign in with a password only"
+    return
+  fi
+  [[ "$CAULDRON_EDGE_KEY" =~ ^[A-Za-z0-9]{32,128}$ ]] || die "CAULDRON_EDGE_KEY must be 32 to 128 letters and digits"
+  (umask 077 && printf '%s' "$CAULDRON_EDGE_KEY" > "$key_file")
+  unset CAULDRON_EDGE_KEY
+  log "edge sign-in on"
+}
+
+# The host's serial and the members' seats, before the app takes its first request.
+sync_seats() {
+  if [ -z "${CAULDRON_SEATS+set}" ] && [ -z "${CAULDRON_ADMIN_CERT_SERIAL:-}" ]; then
+    return
+  fi
+  php83 /usr/share/cauldron/cfg-seats.php || die "the seat sync failed"
+  unset CAULDRON_SEATS
 }
 
 # ── Database ────────────────────────────────────────────────────────────────
@@ -360,6 +402,8 @@ seed_database "$DB_PASS"
 write_config "$DB_PASS"
 set_admin_password
 provision_resources
+sync_seats
+write_edge_key
 
 write_php_fpm_config
 log "starting php-fpm"
