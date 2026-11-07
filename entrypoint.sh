@@ -56,6 +56,7 @@ DATA_DIR=/data
 MYSQL_DIR="$DATA_DIR/mysql"
 RUN_DIR=/tmp/cauldron
 SETTINGS_DIST=/usr/share/cauldron/settings
+FILES_DIST=/usr/share/cauldron/files
 SOCKET="$RUN_DIR/mysqld/mysqld.sock"
 
 DB_NAME="${CAULDRON_DB_NAME:-cauldron}"
@@ -88,6 +89,7 @@ prepare_filesystem() {
   # No chown: this uid owns what it creates, and cannot take what it does not.
   [ -w "$DATA_DIR" ] || die "/data is not writable by uid $(id -u) — the mount must belong to the user the container runs as"
   mkdir -p "$MYSQL_DIR" "$DATA_DIR/files" "$DATA_DIR/resources"
+  copy_shipped_files
 
   # Owner-only: the DB socket and the settings (which hold the DB password)
   # are for this container's one uid. A restarted container finds its own dir
@@ -95,6 +97,24 @@ prepare_filesystem() {
   mkdir -p -m 0700 "$RUN_DIR"
   [ -O "$RUN_DIR" ] || die "$RUN_DIR belongs to another uid"
   mkdir -p -m 0700 "$RUN_DIR/mysqld" "$RUN_DIR/php" "$RUN_DIR/nginx" "$RUN_DIR/sessions" "$RUN_DIR/settings" "$RUN_DIR/logfiles"
+}
+
+# Cauldron's own files (default.jpg, empty_map.png, the effects and brushes) come with the
+# image, and any that /data/files lacks is copied in (#24). A file already there may be the
+# host's, so it is never replaced. One file at a time, not `cp -Rn`: busybox's -n skips a
+# folder that exists as a whole, /data/files itself included, so it would copy nothing.
+# A file that cannot be copied (a full disk) costs a default image, not the boot.
+copy_shipped_files() {
+  local src dst failed=0
+  while IFS= read -r src; do
+    dst="$DATA_DIR/files/${src#"$FILES_DIST"/}"
+    if [ -d "$src" ]; then
+      mkdir -p "$dst" || failed=1
+    elif [ ! -e "$dst" ] && [ ! -L "$dst" ]; then
+      mkdir -p "${dst%/*}" && cp "$src" "$dst" || failed=1
+    fi
+  done < <(find "$FILES_DIST" -mindepth 1)
+  [ "$failed" = 0 ] || log "WARNING: some of Cauldron's own files could not be copied into /data/files"
 }
 
 # ── Config templating ───────────────────────────────────────────────────────
