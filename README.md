@@ -19,7 +19,7 @@ Four processes in one container, supervised by `entrypoint.sh` under `tini`:
 | **nginx** | serves static files, routes everything else to `index.php`, proxies `/websocket` to cauldrond |
 | **php-fpm 8.3** | the application (Banshee framework) |
 | **MariaDB** | Banshee ships exactly one DB driver — `mysqli` — so this is not optional |
-| **cauldrond** | the realtime daemon (wsServer), listening on `127.0.0.1:2001` |
+| **cauldrond** | the realtime daemon (wsServer), listening on `127.0.0.1:2001`, and on a unix socket for the platform's drop command |
 
 They share one container because `KindAdapter.provision()` returns a single `ServerHandle`.
 
@@ -37,8 +37,10 @@ rather than restating it here.
 > Pin the commit, never the tag or an archive checksum. Tags are mutable, and GitLab's
 > `/-/archive/` tarballs are **not byte-stable** — a `sha256` pin on one will fail spuriously.
 
-The build changes upstream in two places, and stops if either no longer applies:
+The build changes upstream in three places, and stops if any no longer applies:
 
+- `patches/cauldrond-seat-drop.patch` makes each table socket carry the member it was opened for,
+  and lets the platform end one member's sockets ([Taking a seat back](#taking-a-seat-back)).
 - `patches/map-dimensions-from-header.patch` reads a map's width and height from its header
   (`getimagesize`) instead of decoding the whole image, so a map of any size up to the 256 MB upload
   limit saves on every size. Video maps are measured as upstream does.
@@ -47,8 +49,10 @@ The build changes upstream in two places, and stops if either no longer applies:
 ## Licensing
 
 This repository's own sources (Dockerfile, entrypoint, configs) are **AGPL-3.0-only**, like its
-`cfg-server-*` siblings. Upstream is not vendored here, so nothing in this repo is under another
-licence.
+`cfg-server-*` siblings. Upstream is not vendored here. The two files under `patches/` change
+upstream's code and carry its licence: `cauldrond-seat-drop.patch` GPL-3.0 (wsServer), and
+`map-dimensions-from-header.patch` GPL-2.0-or-later (Cauldron). They are the source of every change
+the built image makes to upstream.
 
 The **built image** contains:
 
@@ -111,6 +115,24 @@ Names, roles and characters are the host's to change, in Cauldron; the sync writ
 A malformed list stops the boot. Self-registration is off: a registered visitor would start a
 group of their own on the host's server.
 
+### Taking a seat back
+
+When the host takes a seat back, or a member is banned or suspended, the platform's edge refuses
+that member's next request. A table already open would stay open, and the Cauldron client never
+reconnects, so restarting the daemon would end every table. Instead the daemon ends that member's
+sockets alone:
+
+- nginx reads the serial from the identity header on each `/websocket` upgrade and passes it on as
+  `X-Cfg-Seat`; cauldrond keeps it with the socket. The spectator page connects there too.
+- the platform POSTs `/cfg/drop-seat` on the container network with one header,
+  `X-Cfg-Kind-Command: v1.drop.<serial>.<expires>.<mac>`: the HMAC-SHA256 of
+  `v1.drop.<serial>.<expires>` under `CAULDRON_EDGE_KEY`, good for at most a minute.
+  `cfg-drop-seat.php` checks it and tells cauldrond, over `/tmp/cauldron/cauldrond.sock`, to shut
+  down every socket of that serial. It answers `{"dropped": <n>}`, 403 for a header that does not
+  verify, 503 when the daemon does not answer.
+
+The edge forwards no `/cfg` path, and nothing reaches the control socket but this container's uid.
+
 ### Volume
 
 `/data` is the per-installation mount:
@@ -156,8 +178,8 @@ Two choices in the image earn that, and both should be understood before changin
 
 ## Security notes
 
-**Only `index.php` executes.** nginx uses `location = /index.php`, not a `\.php$` regex, and
-explicitly denies `.php` under `/files` and `/resources`. Users upload map images and video into
+**Only `index.php` and the platform's drop-seat script execute.** nginx uses an exact `location =`
+for each, not a `\.php$` regex, and explicitly denies `.php` under `/files` and `/resources`. Users upload map images and video into
 those trees; an Apache + mod_php deployment would execute a `.php` dropped there. Do not add a
 generic PHP handler.
 
@@ -218,6 +240,10 @@ curl -i --max-time 4 --http1.1 \
    something you must check for by hand. A file new to upstream's `public/files` is copied in at
    that boot; one upstream changed under the same name is not, since it may be the host's.
 4. Re-run the websocket check above; `cauldrond` is versioned independently inside the tarball.
+   If `patches/cauldrond-seat-drop.patch` no longer applies, the build stops. Remake it against the
+   new `src/ws.c` and `src/cauldrond.c`, keeping the seat read before the handshake parser and the
+   cleared `client_sock` under the global mutex; the build's drop-seat smoke test ends one seat's
+   socket and checks the others still talk.
 5. Confirm the sign-in still holds: Banshee's certificate login still reads `TLS_CERT_SERIAL` and
    `users.cert_serial` (`models/banshee/login.php`, `user::login_ssl_auth`), and the `users` and
    `user_role` columns `cfg-seats.php` writes are unchanged. The build's sign-in smoke test fails if

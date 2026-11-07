@@ -72,8 +72,17 @@ RUN git -C src apply --verbose /build/patches/map-dimensions-from-header.patch &
 # CMAKE_POLICY_VERSION_MINIMUM: upstream declares cmake_minimum_required(3.0),
 # which CMake >= 4 refuses outright and 3.31 deprecates. Pinning the policy
 # floor keeps this building as the base image's CMake moves forward.
+#
+# Each table socket carries the member it was opened for, and the platform can end a member's
+# sockets (cs#767; the why is at the top of the patch). `git apply` refuses a patch whose context
+# moved, and the greps stop the build if a piece is missing after an upstream bump.
+COPY patches/cauldrond-seat-drop.patch /build/patches/
 RUN tar xzf src/extra/cauldrond.tar.gz -C /build && \
     cd /build/cauldrond && \
+    git apply --verbose /build/patches/cauldrond-seat-drop.patch && \
+    grep -F 'int ws_drop_seat(unsigned long seat)' src/ws.c >/dev/null && \
+    grep -F '*seat = request_seat(' src/ws.c >/dev/null && \
+    grep -F 'control_listen()' src/cauldrond.c >/dev/null && \
     sed -i 's|^set(UID .*|set(UID 82)|; s|^set(GID .*|set(GID 82)|' CMakeLists.txt && \
     cmake -S . -B build -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && \
     make -C build && \
