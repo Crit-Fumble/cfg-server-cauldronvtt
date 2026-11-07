@@ -54,6 +54,14 @@ RUN grep -F "+ ws_port + '/');" src/public/js/spectate.js >/dev/null && \
     sed -i "s#+ ws_port + '/');#+ ws_port + '/websocket');#" src/public/js/spectate.js && \
     grep -F "+ ws_port + '/websocket');" src/public/js/spectate.js >/dev/null
 
+# A map's size is read from its header, so a map upload never decodes the image (cs#762; the
+# why is at the top of the patch). `git apply` refuses a patch whose context moved, and the
+# greps stop the build if the header read is missing or the decode is back after an upstream bump.
+COPY patches/map-dimensions-from-header.patch /build/patches/
+RUN git -C src apply --verbose /build/patches/map-dimensions-from-header.patch && \
+    grep -F 'getimagesize($image)' src/models/vault/map.php >/dev/null && \
+    ! grep -F 'Banshee\image' src/models/vault/map.php
+
 # cauldrond ships as a tarball inside the repo. It is wsServer (GPL-3.0) with a
 # Cauldron-specific main(); CMakeLists bakes PORT/UID/GID in at compile time, so
 # they are set here rather than configured at runtime.

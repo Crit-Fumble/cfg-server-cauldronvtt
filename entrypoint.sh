@@ -347,10 +347,11 @@ provision_resources() {
 }
 
 # ── php-fpm sizing ──────────────────────────────────────────────────────────
-# The shipped pool sets memory_limit for the nano tier (128M). A GM's map upload
-# decodes the whole image in one PHP worker: a 4096x4096 map takes about 64 MB,
-# an 8192x8192 one about 256 MB, and past the limit PHP dies mid-request with a
-# blank 500 (banshee/image.php). So the limit follows the container: the share
+# The shipped pool sets memory_limit for the nano tier (128M). A token or portrait
+# upload decodes the whole image in one PHP worker (banshee/image.php): 4096x4096
+# takes about 64 MB, 8192x8192 about 256 MB, and past the limit PHP dies
+# mid-request with a blank 500. A map is only measured, from its header
+# (patches/map-dimensions-from-header.patch). So the limit follows the container: the share
 # of the cgroup's memory limit left for php-fpm's children after the rest of the
 # stack (MariaDB, nginx, cauldrond: under 128 MB together), never below the
 # shipped 128M and never above 1024M, in 16M steps. nano stays at 128M, micro

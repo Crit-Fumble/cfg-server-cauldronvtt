@@ -37,6 +37,13 @@ rather than restating it here.
 > Pin the commit, never the tag or an archive checksum. Tags are mutable, and GitLab's
 > `/-/archive/` tarballs are **not byte-stable** — a `sha256` pin on one will fail spuriously.
 
+The build changes upstream in two places, and stops if either no longer applies:
+
+- `patches/map-dimensions-from-header.patch` reads a map's width and height from its header
+  (`getimagesize`) instead of decoding the whole image, so a map of any size up to the 256 MB upload
+  limit saves on every size. Video maps are measured as upstream does.
+- the spectator page opens its websocket on `/websocket`, as the table does (a `sed` in the Dockerfile).
+
 ## Licensing
 
 This repository's own sources (Dockerfile, entrypoint, configs) are **AGPL-3.0-only**, like its
@@ -215,3 +222,6 @@ curl -i --max-time 4 --http1.1 \
    `users.cert_serial` (`models/banshee/login.php`, `user::login_ssl_auth`), and the `users` and
    `user_role` columns `cfg-seats.php` writes are unchanged. The build's sign-in smoke test fails if
    either moved.
+6. If `patches/map-dimensions-from-header.patch` no longer applies, the build stops. Remake it against
+   the new `models/vault/map.php` (`get_image_dimensions`), keeping the header read; the build's map
+   smoke test measures an 8192x8192 map under nano's 128M `memory_limit`.
