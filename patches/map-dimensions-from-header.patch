@@ -1,0 +1,46 @@
+Read a map's width and height from its header, never by decoding it (cs#762).
+
+When a GM leaves a map's width and height empty, Cauldron measures the map by
+building a GD image of it: the whole file and the whole decoded bitmap sit in
+one PHP worker. An 8192x8192 map needs about 256 MB, past the nano memory_limit
+(128M), and the upload ends in a blank 500. getimagesize() reads only the
+header, so a map of any size up to the upload limit is measured. Video maps
+take get_video_dimensions() and are untouched.
+
+The Dockerfile applies this with `git apply` in the build stage and stops the
+build if it no longer applies or the header read is missing afterwards.
+
+--- a/models/vault/map.php
++++ b/models/vault/map.php
+@@ -52,6 +52,8 @@
+ 				} else if (substr($image, 0, 7) == "/files/") {
+ 					$image = substr($image, 1);
+ 				}
++
++				$size = is_file($image) ? getimagesize($image) : false;
+ 			} else {
+ 				list($protocol,, $hostname, $path) = explode("/", $map["url"], 4);
+ 				if ($protocol == "http:") {
+@@ -68,13 +70,18 @@
+ 					return false;
+ 				}
+ 
+-				$image = $result["body"];
++				$size = getimagesizefromstring($result["body"]);
+ 			}
+ 
+-			$image = new \Banshee\image($image);
++			/* CFG: the size comes from the image's header. Decoding the whole map
++			 * only to measure it runs a large map past PHP's memory_limit.
++			 */
++			if ($size === false) {
++				return false;
++			}
+ 
+-			$map["width"] = $image->width;
+-			$map["height"] = $image->height;
++			$map["width"] = $size[0];
++			$map["height"] = $size[1];
+ 
+ 			return $map;
+ 		}

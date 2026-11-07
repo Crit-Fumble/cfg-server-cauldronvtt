@@ -101,6 +101,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The patched measurement, under nano's memory_limit (128M), on the shape an upload has: a
+      # /tmp path with no extension. Decoding this 8192x8192 map would take about 256 MB (cs#762).
+      - name: Smoke test — a map larger than memory_limit is measured from its header
+        run: |
+          set -euo pipefail
+          docker run -d --name cauldron-ci-map --entrypoint sleep cfg-server-cauldronvtt:ci 300 >/dev/null
+          docker exec cauldron-ci-map php83 -d memory_limit=-1 -r 'imagepng(imagecreatetruecolor(8192, 8192), "/tmp/map");'
+          got=$(docker exec -i cauldron-ci-map php83 -d memory_limit=128M <<'PHP'
+          <?php
+          class cauldron_model {}
+          require "/var/www/cauldron/models/vault/map.php";
+          $model = new vault_map_model();
+          $map = $model->get_image_dimensions(array("url" => "/tmp/map"));
+          $missing = $model->get_image_dimensions(array("url" => "/tmp/no-such-map"));
+          echo $map["width"], "x", $map["height"], " ", var_export($missing, true);
+          PHP
+          )
+          [ "$got" = "8192x8192 false" ] || { echo "measured: $got (want 8192x8192, and false for a missing file)"; exit 1; }
+          docker rm -f cauldron-ci-map >/dev/null
+
       # A green build proves nothing here — the image has four processes that
       # must come up in order, and its known failure modes (SIGPIPE in the
       # entrypoint, a missing www-data account) all produce a perfectly
