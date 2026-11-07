@@ -136,7 +136,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/sbin/cauldrond
 # those paths are links made here, once, to where the real files will be:
 #   settings/{banshee,cauldron,public_modules}.conf → /tmp/cauldron/settings/
 #     (the shipped copies move to /usr/share/cauldron/settings as templates)
-#   public/files, public/resources → /data
+#   public/files, public/resources → /data. The files upstream ships in public/files
+#     (default.jpg, empty_map.png, the effects and brushes) move to
+#     /usr/share/cauldron/files, and the entrypoint copies any missing one into
+#     /data/files at boot (#24).
 #   logfiles → /tmp/cauldron/logfiles. Banshee appends its action log there (each
 #     sign-in, among others), and its error handler prints a write it cannot make
 #     into the response, which ends a JSON answer with a PHP warning.
@@ -147,7 +150,9 @@ RUN mkdir -p /data /usr/share/cauldron/settings && \
       mv "/var/www/cauldron/settings/$f" /usr/share/cauldron/settings/ && \
       ln -s "/tmp/cauldron/settings/$f" "/var/www/cauldron/settings/$f" || exit 1; \
     done && \
-    rm -rf /var/www/cauldron/public/files /var/www/cauldron/public/resources /var/www/cauldron/logfiles && \
+    test -f /var/www/cauldron/public/files/default.jpg && \
+    mv /var/www/cauldron/public/files /usr/share/cauldron/files && \
+    rm -rf /var/www/cauldron/public/resources /var/www/cauldron/logfiles && \
     ln -s /data/files /var/www/cauldron/public/files && \
     ln -s /data/resources /var/www/cauldron/public/resources && \
     ln -s /tmp/cauldron/logfiles /var/www/cauldron/logfiles && \

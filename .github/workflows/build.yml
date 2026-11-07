@@ -136,6 +136,19 @@ jobs:
           curl -sf http://127.0.0.1:8090/ | grep -i 'Cauldron' >/dev/null \
             || { echo "homepage did not render"; docker logs cauldron-ci; exit 1; }
 
+          echo "--- Cauldron's own files are served from /data/files (#24) ---"
+          for f in default.jpg empty_map.png effects/fireball.png; do
+            curl -sf -o /dev/null "http://127.0.0.1:8090/files/$f" \
+              || { echo "/files/$f is not served"; docker logs cauldron-ci; exit 1; }
+          done
+          shipped=$(docker exec cauldron-ci sh -c 'find /usr/share/cauldron/files -type f | wc -l')
+          copied=$(docker exec cauldron-ci sh -c 'find /data/files -type f | wc -l')
+          [ "$shipped" -gt 0 ] && [ "$copied" -ge "$shipped" ] \
+            || { echo "the image ships $shipped files, /data/files holds $copied"; exit 1; }
+          if docker logs cauldron-ci 2>&1 | grep -F 'could not be copied' >/dev/null; then
+            echo "the entrypoint could not copy Cauldron's own files"; docker logs cauldron-ci; exit 1
+          fi
+
           echo "--- the websocket upgrades through nginx to cauldrond ---"
           # The entrypoint's readiness barrier guarantees cauldrond is bound to
           # :2001 before nginx serves, so no retry is needed here. Capture the
@@ -167,6 +180,12 @@ jobs:
           esac
 
           echo "--- data survives container replacement ---"
+          # A host's file in place of a shipped one, a file of the host's own, and a shipped
+          # file gone from a folder that is still there: the boot keeps the first two as they
+          # are and puts the third back.
+          docker exec cauldron-ci sh -c 'echo host-map > /data/files/default.jpg && echo host-file > /data/files/member.txt'
+          docker exec cauldron-ci rm /data/files/effects/fireball.png
+          kept=$(docker exec cauldron-ci sha256sum /data/files/default.jpg /data/files/member.txt)
           docker rm -f cauldron-ci
           docker run -d --name cauldron-ci -p 8090:80 \
             -v /tmp/cauldron-ci:/data \
@@ -198,6 +217,10 @@ jobs:
           # same empty-output-parses-as-clean shape C7 exists to stop.
           curl -sf -o /dev/null --retry 60 --retry-delay 1 --retry-connrefused http://127.0.0.1:8090/ \
             || { echo "replaced container never served HTTP"; docker logs cauldron-ci; exit 1; }
+          [ "$(docker exec cauldron-ci sha256sum /data/files/default.jpg /data/files/member.txt)" = "$kept" ] \
+            || { echo "the boot replaced a file the host put in /data/files"; exit 1; }
+          curl -sf -o /dev/null http://127.0.0.1:8090/files/effects/fireball.png \
+            || { echo "a shipped file missing from /data/files was not copied back"; docker logs cauldron-ci; exit 1; }
 
           echo "--- idle footprint (must fit the nano tier: 512 MB) ---"
           docker stats --no-stream --format '{{.MemUsage}}' cauldron-ci
@@ -230,6 +253,8 @@ jobs:
           done
           curl -sf http://127.0.0.1:8091/ | grep -i 'Cauldron' >/dev/null \
             || { echo "homepage did not render as uid 61000"; docker logs cauldron-ci-anyuid; exit 1; }
+          curl -sf -o /dev/null http://127.0.0.1:8091/files/default.jpg \
+            || { echo "/files/default.jpg is not served as uid 61000"; docker logs cauldron-ci-anyuid; exit 1; }
 
           # The handshake key is RFC 6455's own example, "the sample nonce".
           ws_key=$(printf 'the sample nonce' | base64)
@@ -298,6 +323,9 @@ jobs:
           # The ready line is logged as nginx is forked, a beat before it binds :80.
           curl -sf --retry 30 --retry-delay 1 --retry-connrefused http://127.0.0.1:8092/ | grep -i 'Cauldron' >/dev/null \
             || { echo "homepage did not render on the legacy volume"; docker logs cauldron-ci-legacy; exit 1; }
+          # Cauldron's own files reach a volume an earlier image set up (#24).
+          curl -sf -o /dev/null http://127.0.0.1:8092/files/default.jpg \
+            || { echo "/files/default.jpg is not served on the legacy volume"; docker logs cauldron-ci-legacy; exit 1; }
           # What that image left beside root: anonymous and www-data accounts, a test database open to every account.
           left=$(docker exec cauldron-ci-legacy mariadb --socket=/tmp/cauldron/mysqld/mysqld.sock -uroot -N -e "
             select (select count(*) from mysql.global_priv where User in ('', 'www-data'))

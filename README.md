@@ -110,10 +110,17 @@ group of their own on the host's server.
 
 ```
 /data/mysql/       MariaDB datadir
-/data/files/       user uploads      → symlinked to public/files
+/data/files/       Cauldron's own files and user uploads → symlinked to public/files
 /data/resources/   user resources    → symlinked to public/resources
 /data/.dbpass      generated DB password (0600)
 ```
+
+The files Cauldron ships in `public/files` (the default adventure image, the empty map, the
+effects, brushes and the rest, about 17 MiB) are kept in the image at `/usr/share/cauldron/files`.
+Each boot copies any of them that `/data/files` lacks, one file at a time, and never replaces a
+file that is already there, so a host's own file under the same name stays. A shipped file the host
+deleted comes back at the next boot. A file that cannot be copied (a full disk) is logged and the
+server boots without it.
 
 Nothing in the container runs as root. It starts as `www-data` (uid 82), or as any uid given with
 `--user`, and every process in it runs as that one uid. `/data` must belong to it: the entrypoint
@@ -201,7 +208,8 @@ curl -i --max-time 4 --http1.1 \
    directories from upstream's `USER_SUB_DIRECTORIES`, so a new type needs no change here.
 3. Boot against an **existing** `/data` — confirm the seed guard logs `already provisioned` and no
    data is lost. Upstream ships no migration tooling, so a schema change between releases is
-   something you must check for by hand.
+   something you must check for by hand. A file new to upstream's `public/files` is copied in at
+   that boot; one upstream changed under the same name is not, since it may be the host's.
 4. Re-run the websocket check above; `cauldrond` is versioned independently inside the tarball.
 5. Confirm the sign-in still holds: Banshee's certificate login still reads `TLS_CERT_SERIAL` and
    `users.cert_serial` (`models/banshee/login.php`, `user::login_ssl_auth`), and the `users` and
