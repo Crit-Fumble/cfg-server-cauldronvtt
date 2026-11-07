@@ -1,0 +1,270 @@
+Each table socket carries the member it was opened for, and the platform can end a member's
+sockets at once (cs#767).
+
+cauldrond keeps no identity: a socket is a file descriptor and a group key. When a host takes a
+member's seat back, the platform's edge refuses that member's next request, but a table already
+open stays open, and every line the host types still reaches it. The Cauldron client never
+reconnects, so restarting the daemon would end every table on the server.
+
+So the daemon learns whose socket each one is, and ends one member's sockets on command:
+
+  - nginx writes X-Cfg-Seat on the upgrade request, the serial in the edge's identity header
+    (nginx.conf). It is read from the handshake before get_handshake_response(), whose strtok_r()
+    cuts the request up.
+  - ws_drop_seat() shuts down every socket of that seat under the global mutex. Its own thread
+    wakes from recv() and leaves through the usual close path, which unlinks it from its group
+    and closes the number. The close path now clears client_sock under the same mutex before it
+    closes, so a number ws_drop_seat() reads is still that socket's and never one accept() has
+    handed out again.
+  - a unix socket, /tmp/cauldron/cauldrond.sock, takes "drop <seat>\n" and answers how many
+    sockets it ended. Only cfg-drop-seat.php, which checks the platform's signature, writes to it.
+    It is bound before the websocket port; a daemon that cannot bind it does not start.
+
+The Dockerfile applies this with `git apply` in the build stage and stops the build if it no
+longer applies or a piece is missing afterwards.
+
+--- a/src/cauldrond.c
++++ b/src/cauldrond.c
+@@ -22,11 +22,74 @@
+ #include <unistd.h>
+ #include <string.h>
+ #include <grp.h>
++#include <pthread.h>
++#include <sys/socket.h>
++#include <sys/time.h>
++#include <sys/un.h>
+ #include "ws.h"
+ #include "config.h"
+ 
+ static FILE *logfile = NULL;
+ 
++/* CFG: where the platform's drop-seat route (cfg-drop-seat.php) reaches the daemon. Its directory
++ * is the container's own, mode 0700, so only the uid nginx and php-fpm run as can connect.
++ */
++#define CONTROL_SOCKET "/tmp/cauldron/cauldrond.sock"
++
++static int control_listen(void)
++{
++	struct sockaddr_un addr;
++	int sock;
++
++	if ((sock = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
++		return -1;
++	memset(&addr, 0, sizeof(addr));
++	addr.sun_family = AF_UNIX;
++	strncpy(addr.sun_path, CONTROL_SOCKET, sizeof(addr.sun_path) - 1);
++	unlink(CONTROL_SOCKET);
++	if ((bind(sock, (struct sockaddr *)&addr, sizeof(addr)) == -1) || (listen(sock, 8) == -1)) {
++		close(sock);
++		return -1;
++	}
++
++	return sock;
++}
++
++/* One command a connection, "drop <seat>\n", answered with how many sockets it ended, or -1 for a
++ * command it does not take.
++ */
++static void *control_loop(void *data)
++{
++	struct timeval timeout = { 2, 0 };
++	int sock = (int)(intptr_t)data, client, dropped, n;
++	unsigned long seat;
++	char line[32], *end;
++
++	for (;;) {
++		if ((client = accept(sock, NULL, NULL)) == -1) {
++			sleep(1);
++			continue;
++		}
++		setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
++
++		dropped = -1;
++		if ((n = (int)recv(client, line, sizeof(line) - 1, 0)) > 0) {
++			line[n] = '\0';
++			if ((strncmp(line, "drop ", 5) == 0) && (line[5] >= '1') && (line[5] <= '9')) {
++				seat = strtoul(line + 5, &end, 10);
++				if ((*end == '\n') && (seat <= 4294967295UL))
++					dropped = ws_drop_seat(seat);
++			}
++		}
++
++		n = snprintf(line, sizeof(line), "%d\n", dropped);
++		send(client, line, (size_t)n, MSG_NOSIGNAL);
++		close(client);
++	}
++
++	return NULL;
++}
++
+ /**
+  * @dir example/
+  * @brief wsServer examples folder
+@@ -103,6 +166,8 @@
+ {
+ 	pid_t pid;
+ 	FILE *fp;
++	pthread_t control_thread;
++	int control;
+ 
+ 	/* Handle parameters
+ 	 */
+@@ -155,6 +220,19 @@
+ 		setgid(GID);
+ 		setuid(UID);
+ 	}
++
++	/* CFG: the control socket is bound before the websocket port, so a daemon that answers on
++	 * :2001 also takes drop commands. One that cannot bind it does not start.
++	 */
++	if ((control = control_listen()) == -1) {
++		perror("bind(" CONTROL_SOCKET ")");
++		return EXIT_FAILURE;
++	}
++	if (pthread_create(&control_thread, NULL, control_loop, (void *)(intptr_t)control) != 0) {
++		fprintf(stderr, "Could not start the control thread\n");
++		return EXIT_FAILURE;
++	}
++	pthread_detach(control_thread);
+ 
+ 	/* Start the websocket server
+ 	 */
+--- a/src/ws.c
++++ b/src/ws.c
+@@ -90,6 +90,9 @@
+ 	char *group_key;
+ 	int next_in_group;
+ 
++	/* CFG: the platform seat this socket was opened for, 0 for none (ws_drop_seat). */
++	unsigned long seat;
++
+ 	/* Timeout thread and locks. */
+ 	pthread_mutex_t mtx_state;
+ 	pthread_cond_t cnd_state_close;
+@@ -241,6 +244,52 @@
+ 	pthread_mutex_unlock(&mutex);
+ }
+ 
++/* CFG: the seat nginx wrote on the upgrade request, from the platform edge's identity header.
++ * 0 when there is none, or it is not a number from 1 to 4294967295.
++ */
++static unsigned long request_seat(const char *request)
++{
++	const char *end, *p;
++	unsigned long seat = 0;
++
++	if ((end = strstr(request, "\r\n\r\n")) == NULL)
++		return (0);
++	if (((p = strstr(request, "\r\nX-Cfg-Seat: ")) == NULL) || (p > end))
++		return (0);
++	for (p += 14; (*p >= '0') && (*p <= '9'); p++)
++	{
++		seat = (seat * 10) + (unsigned long)(*p - '0');
++		if (seat > 4294967295UL)
++			return (0);
++	}
++	return ((*p == '\r') ? seat : 0);
++}
++
++/* CFG: end every socket opened for @p seat, and return how many. Each is shut down, never closed
++ * here: its own thread wakes from recv() and leaves through its usual close path, which unlinks it
++ * from its group and closes the number. The closing thread clears client_sock under this same
++ * mutex before it closes, so a number read here is still that socket's.
++ */
++int ws_drop_seat(unsigned long seat)
++{
++	int i, dropped = 0;
++
++	if (seat == 0)
++		return (0);
++
++	pthread_mutex_lock(&mutex);
++	for (i = 0; i < MAX_CLIENTS; i++)
++	{
++		if ((client_socks[i].client_sock == -1) || (client_socks[i].seat != seat))
++			continue;
++		if (shutdown(client_socks[i].client_sock, SHUT_RDWR) == 0)
++			dropped++;
++	}
++	pthread_mutex_unlock(&mutex);
++
++	return (dropped);
++}
++
+ /**
+  * @brief Returns the current client state for a given
+  * client @p idx.
+@@ -565,7 +614,7 @@
+  * @attention This is part of the internal API and is documented just
+  * for completeness.
+  */
+-static int do_handshake(struct ws_frame_data *wfd, int p_index)
++static int do_handshake(struct ws_frame_data *wfd, int p_index, unsigned long *seat)
+ {
+ 	char *response; /* Handshake response message. */
+ 	char *p;        /* Last request line pointer.  */
+@@ -585,6 +634,9 @@
+ 	wfd->amt_read = n;
+ 	wfd->cur_pos  = (size_t)((ptrdiff_t)(p - (char *)wfd->frm)) + 4;
+ 
++	/* CFG: before get_handshake_response(), whose strtok_r() cuts the request up. */
++	*seat = request_seat((const char *)wfd->frm);
++
+ 	/* Get response. */
+ 	if (get_handshake_response((char *)wfd->frm, &response) < 0)
+ 	{
+@@ -1194,6 +1246,7 @@
+ 	int p_index;              /* Port list index.        */
+ 	int sock;                 /* File descriptor.        */
+ 	char *pos, *group_key;
++	unsigned long seat;       /* CFG: the platform seat. */
+ 
+ 	connection_index = (int)(intptr_t)vsock;
+ 	sock             = client_socks[connection_index].client_sock;
+@@ -1204,9 +1257,14 @@
+ 	wfd.sock = sock;
+ 
+ 	/* Do handshake. */
+-	if (do_handshake(&wfd, p_index) < 0)
++	if (do_handshake(&wfd, p_index, &seat) < 0)
+ 		goto closed;
+ 
++	/* CFG */
++	pthread_mutex_lock(&mutex);
++	client_socks[connection_index].seat = seat;
++	pthread_mutex_unlock(&mutex);
++
+ 	/* Change state. */
+ 	set_client_state(connection_index, WS_STATE_OPEN);
+ 
+@@ -1274,8 +1332,11 @@
+ 	clse_thrd = client_socks[connection_index].close_thrd;
+ 	if (client_socks[connection_index].state != WS_STATE_CLOSED)
+ 	{
+-		/* Removes client socket from socks list. */
++		/* Removes client socket from socks list. CFG: under the global mutex, for ws_drop_seat. */
++		pthread_mutex_lock(&mutex);
+ 		client_socks[connection_index].client_sock = -1;
++		client_socks[connection_index].seat        = 0;
++		pthread_mutex_unlock(&mutex);
+ 		client_socks[connection_index].state       = WS_STATE_CLOSED;
+ 		if (client_socks[connection_index].group_key != NULL)
+ 		{
+@@ -1347,6 +1408,7 @@
+ 				client_socks[i].state         = WS_STATE_CONNECTING;
+ 				client_socks[i].group_key     = NULL;
+ 				client_socks[i].next_in_group = -1;
++				client_socks[i].seat          = 0;
+ 				client_socks[i].close_thrd    = false;
+ 				connection_index              = i;
+ 
+--- a/src/ws.h
++++ b/src/ws.h
+@@ -260,6 +260,7 @@
+ 	extern int ws_get_state(int fd);
+ 	extern int ws_close_client(int fd);
+ 	extern int ws_socket(struct ws_events *evs, uint16_t port, int thread_loop);
++	extern int ws_drop_seat(unsigned long seat);
+ 
+ #ifdef AFL_FUZZ
+ 	extern int ws_file(struct ws_events *evs, const char *file);

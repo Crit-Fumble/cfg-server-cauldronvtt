@@ -410,6 +410,122 @@ jobs:
             || { echo "the dropped seat's account is not deactivated"; exit 1; }
           docker rm -f cauldron-ci-seats
 
+      # Taking a seat back ends that member's open table at once (cs#767): each socket carries the
+      # seat nginx read from the identity header, and a drop command signed with the edge key ends
+      # every socket of that seat and no other. Raw websockets, stdlib Python, through nginx :80.
+      - name: Smoke test — taking a seat back ends that member's table sockets
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cauldron-ci-drop
+          sudo chown 82:82 /tmp/cauldron-ci-drop
+          export KEY; KEY=$(openssl rand -hex 32)
+          docker run -d --name cauldron-ci-drop -p 8094:80 -v /tmp/cauldron-ci-drop:/data \
+            -e CAULDRON_ADMIN_PASSWORD=ci-smoke-test -e CAULDRON_EDGE_KEY="$KEY" \
+            -e CAULDRON_ADMIN_CERT_SERIAL=1000001 -e CAULDRON_SEATS="$(printf '2000002 seat-one Seat One\n3000003 seat-two Seat Two')" \
+            cfg-server-cauldronvtt:ci >/dev/null
+          curl -sf -o /dev/null --retry 60 --retry-delay 2 --retry-all-errors http://127.0.0.1:8094/ \
+            || { echo "never served HTTP"; docker logs cauldron-ci-drop; exit 1; }
+          docker exec cauldron-ci-drop test -S /tmp/cauldron/cauldrond.sock \
+            || { echo "cauldrond has no control socket"; docker logs cauldron-ci-drop; exit 1; }
+
+          python3 -I - <<'PY' || { docker logs cauldron-ci-drop; exit 1; }
+          import base64, hashlib, hmac, http.client, os, socket, sys, time
+
+          KEY = os.environ["KEY"].encode()
+          PORT = 8094
+
+          def signed(payload):
+              return payload + "." + hmac.new(KEY, payload.encode(), hashlib.sha256).hexdigest()
+
+          def ident(serial):
+              return signed(f"v1.{serial}.{int(time.time()) + 60}")
+
+          def table(serial):
+              s = socket.create_connection(("127.0.0.1", PORT), timeout=5)
+              key = base64.b64encode(os.urandom(16)).decode()
+              s.sendall((f"GET /websocket HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                         f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nX-Cfg-Kind-Identity: {ident(serial)}\r\n\r\n").encode())
+              head = b""
+              while b"\r\n\r\n" not in head:
+                  chunk = s.recv(1024)
+                  if not chunk:
+                      sys.exit(f"seat {serial}: closed during the handshake")
+                  head += chunk
+              if b" 101 " not in head.split(b"\r\n")[0]:
+                  sys.exit(f"seat {serial}: no upgrade: {head!r}")
+              send(s, '{"group_key":"cfg-ci-table"}')
+              return s
+
+          def send(s, text):
+              data, mask = text.encode(), os.urandom(4)
+              s.sendall(bytes([0x81, 0x80 | len(data)]) + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+          def read(s):
+              s.settimeout(3)
+              head = s.recv(2)
+              n = head[1] & 0x7F
+              data = b""
+              while len(data) < n:
+                  data += s.recv(n - len(data))
+              return data.decode()
+
+          def ended(s):
+              s.settimeout(3)
+              try:
+                  return s.recv(16) == b""
+              except ConnectionResetError:
+                  return True
+              except socket.timeout:
+                  return False
+
+          def drop(command, method="POST"):
+              c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+              c.request(method, "/cfg/drop-seat", headers={"X-Cfg-Kind-Command": command} if command else {})
+              r = c.getresponse()
+              return r.status, r.read().decode()
+
+          def command(serial, expires_in=30, key=None):
+              payload = f"v1.drop.{serial}.{int(time.time()) + expires_in}"
+              return payload + "." + hmac.new(key or KEY, payload.encode(), hashlib.sha256).hexdigest()
+
+          host, one, two = table(1000001), table(2000002), table(3000003)
+          time.sleep(0.5)
+
+          refused = {
+              "a header signed with another key": command(3000003, key=os.urandom(32)),
+              "an expired command": command(3000003, expires_in=-5),
+              "a command good for too long": command(3000003, expires_in=600),
+              "an identity header": ident(3000003),
+              "no header": None,
+          }
+          for what, cmd in refused.items():
+              status, body = drop(cmd)
+              if status != 403:
+                  sys.exit(f"{what}: {status} {body}, want 403")
+          status, _ = drop(command(3000003), method="GET")
+          if status != 405:
+              sys.exit(f"a GET: {status}, want 405")
+          send(host, "before")
+          if read(one) != "before" or read(two) != "before":
+              sys.exit("a refused command touched a socket")
+
+          status, body = drop(command(3000003))
+          if (status, body) != (200, '{"dropped":1}'):
+              sys.exit(f"the drop answered {status} {body}, want 200 {{\"dropped\":1}}")
+          if not ended(two):
+              sys.exit("the dropped seat's socket is still open")
+          send(one, "after")
+          if read(host) != "after":
+              sys.exit("the seat that stayed no longer reaches the host")
+          status, body = drop(command(3000003))
+          if (status, body) != (200, '{"dropped":0}'):
+              sys.exit(f"a second drop answered {status} {body}, want 0 dropped")
+          print("a drop ends that seat's sockets and no other")
+          PY
+          docker logs cauldron-ci-drop 2>&1 | grep 'seat 3000003: 1 table socket(s) ended' >/dev/null \
+            || { echo "the drop was not logged"; docker logs cauldron-ci-drop; exit 1; }
+          docker rm -f cauldron-ci-drop
+
       - name: Push
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
