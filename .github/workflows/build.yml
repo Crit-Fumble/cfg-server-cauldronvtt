@@ -423,7 +423,7 @@ jobs:
             -e CAULDRON_ADMIN_PASSWORD=ci-smoke-test -e CAULDRON_EDGE_KEY="$KEY" \
             -e CAULDRON_ADMIN_CERT_SERIAL=1000001 -e CAULDRON_SEATS="$(printf '2000002 seat-one Seat One\n3000003 seat-two Seat Two')" \
             cfg-server-cauldronvtt:ci >/dev/null
-          curl -sf -o /dev/null --retry 60 --retry-delay 2 --retry-connrefused http://127.0.0.1:8094/ \
+          curl -sf -o /dev/null --retry 60 --retry-delay 2 --retry-all-errors http://127.0.0.1:8094/ \
             || { echo "never served HTTP"; docker logs cauldron-ci-drop; exit 1; }
           docker exec cauldron-ci-drop test -S /tmp/cauldron/cauldrond.sock \
             || { echo "cauldrond has no control socket"; docker logs cauldron-ci-drop; exit 1; }
