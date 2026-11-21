@@ -2,18 +2,12 @@
 
 This repo is a container around [Cauldron VTT](https://gitlab.com/hsleisink/cauldron) —
 a `Dockerfile`, an `entrypoint.sh`, and the `rootfs/` config tree. Upstream is
-fetched at build time (never vendored), and there is no Node toolchain and no
-test suite; **Docker is the only prerequisite**.
+fetched at build time (never vendored), and there is no Node toolchain;
+**Docker is the only prerequisite**.
 
 ## Build & run locally
 
-See the README's "Local development" section:
-
-```bash
-docker build -t cfg-server-cauldronvtt:local .
-docker run --rm -p 8090:80 -v /tmp/cauldron-data:/data \
-  -e CAULDRON_ADMIN_PASSWORD=changeme cfg-server-cauldronvtt:local
-```
+Follow the README's "Local development" section.
 
 When changing the Dockerfile, `entrypoint.sh`, or anything under `rootfs/`,
 verify by hand:
@@ -28,10 +22,11 @@ verify by hand:
 
 ## Ground rules
 
-- **Pin upstream by commit SHA**, never by tag or archive checksum (tags are
-  mutable; GitLab archive tarballs are not byte-stable). Upgrades follow the
+- **Pin upstream by commit SHA**, never by tag or archive checksum (the README's
+  "Upstream is fetched, not vendored" says why). Upgrades follow the
   README's "Upgrading upstream" checklist.
-- **Don't widen PHP execution.** `location = /index.php` only — users upload
+- **Don't widen PHP execution.** An exact `location =` for `index.php` and the
+  drop-seat script only — users upload
   into `/files` and `/resources`, so a generic `\.php$` handler is an RCE.
 - **Keep MariaDB socket-only** (`skip-networking`) and the DB password
   in-container.
@@ -51,4 +46,4 @@ description.
 
 Contributions to this repo are accepted under [AGPL-3.0-only](LICENSE). The
 built image also contains Cauldron VTT (GPL-2.0-or-later) and cauldrond/wsServer
-(GPL-3.0) — keep their licence files and headers intact.
+(GPL-3.0) — keep their license files and headers intact.

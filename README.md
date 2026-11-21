@@ -1,10 +1,10 @@
 # cfg-server-cauldronvtt
 
 Container image for [Cauldron VTT](https://gitlab.com/hsleisink/cauldron) — a lightweight,
-licence-free virtual tabletop — hosted per user by Crit-Fumble's Server Manager.
+license-free virtual tabletop — hosted per user by Crit-Fumble's Server Manager.
 
-Cauldron exists in the platform to close a specific gap: **a user with no FoundryVTT licence cannot
-use VTT hosting at all.** Cauldron needs no licence, so the only cost to the user is compute.
+Cauldron exists in the platform to close a specific gap: **a user with no FoundryVTT license cannot
+use VTT hosting at all.** Cauldron needs no license, so the only cost to the user is compute.
 
 It is deliberately a different product from Foundry, not a cheaper clone. No character sheets, no
 spell lists, no module ecosystem — a map, tokens, dice and Fog of War. Best for groups who want to
@@ -12,14 +12,14 @@ start playing in under a minute.
 
 ## What's in the image
 
-Four processes in one container, supervised by `entrypoint.sh` under `tini`:
+One container runs these processes, supervised by `entrypoint.sh` under `tini`:
 
 | Process | Role |
 |---|---|
 | **nginx** | serves static files, routes everything else to `index.php`, proxies `/websocket` to cauldrond |
 | **php-fpm 8.3** | the application (Banshee framework) |
 | **MariaDB** | Banshee ships exactly one DB driver — `mysqli` — so this is not optional |
-| **cauldrond** | the realtime daemon (wsServer), listening on `127.0.0.1:2001`, and on a unix socket for the platform's drop command |
+| **cauldrond** | the realtime daemon (wsServer), listening on port `2001`, and on a unix socket for the platform's drop command |
 
 They share one container because `KindAdapter.provision()` returns a single `ServerHandle`.
 
@@ -37,22 +37,22 @@ rather than restating it here.
 > Pin the commit, never the tag or an archive checksum. Tags are mutable, and GitLab's
 > `/-/archive/` tarballs are **not byte-stable** — a `sha256` pin on one will fail spuriously.
 
-The build changes upstream in three places, and stops if any no longer applies:
+The build changes upstream in these places, and stops if any no longer applies:
 
 - `patches/cauldrond-seat-drop.patch` makes each table socket carry the member it was opened for,
   and lets the platform end one member's sockets ([Taking a seat back](#taking-a-seat-back)).
 - `patches/map-dimensions-from-header.patch` reads a map's width and height from its header
-  (`getimagesize`) instead of decoding the whole image, so a map of any size up to the 256 MB upload
+  (`getimagesize`) instead of decoding the whole image, so a map of any size up to the upload
   limit saves on every size. Video maps are measured as upstream does.
 - the spectator page opens its websocket on `/websocket`, as the table does (a `sed` in the Dockerfile).
 
 ## Licensing
 
 This repository's own sources (Dockerfile, entrypoint, configs) are **AGPL-3.0-only**, like its
-`cfg-server-*` siblings. Upstream is not vendored here. The two files under `patches/` change
-upstream's code and carry its licence: `cauldrond-seat-drop.patch` GPL-3.0 (wsServer), and
-`map-dimensions-from-header.patch` GPL-2.0-or-later (Cauldron). They are the source of every change
-the built image makes to upstream.
+`cfg-server-*` siblings. Upstream is not vendored here. The files under `patches/` change
+upstream's code and carry its license: `cauldrond-seat-drop.patch` GPL-3.0 (wsServer), and
+`map-dimensions-from-header.patch` GPL-2.0-or-later (Cauldron). They and the Dockerfile are the source
+of every change the built image makes to upstream.
 
 The **built image** contains:
 
@@ -145,7 +145,7 @@ The edge forwards no `/cfg` path, and nothing reaches the control socket but thi
 ```
 
 The files Cauldron ships in `public/files` (the default adventure image, the empty map, the
-effects, brushes and the rest, about 17 MiB) are kept in the image at `/usr/share/cauldron/files`.
+effects, brushes and the rest) are kept in the image at `/usr/share/cauldron/files`.
 Each boot copies any of them that `/data/files` lacks, one file at a time, and never replaces a
 file that is already there, so a host's own file under the same name stays. A shipped file the host
 deleted comes back at the next boot. A file that cannot be copied (a full disk) is logged and the
@@ -161,9 +161,9 @@ database that image left.
 
 ## Sizing
 
-Fits the **`nano`** tier (0.25 thread / 512 MB). Measured idle: **80 MiB**.
+Fits the **`nano`** tier (0.25 thread / 512 MB).
 
-Two choices in the image earn that, and both should be understood before changing them:
+These choices in the image earn that, and each should be understood before changing it:
 
 - **nginx + php-fpm on musl, not Apache + mod_php.** Saves ~40 MB, which is the difference between
   comfortable and OOM-under-load at this tier.
@@ -171,7 +171,7 @@ Two choices in the image earn that, and both should be understood before changin
   `performance_schema` alone costs ~80–100 MB.
 
 > ⚠️ **`pm.max_children = 3` is bounded by argon2, not by throughput.** Banshee hashes with
-> `PASSWORD_ARGON2I` (`banshee.php:16`) and PHP's argon2i defaults to `m=65536`, so **every**
+> `PASSWORD_ARGON2I` (`banshee.php`) and PHP's argon2i defaults to `m=65536`, so **every**
 > password hash or verify transiently allocates ~64 MB. The realistic worst case is a whole party
 > hitting the login form at once when a session starts. Three children bounds that at ~192 MB.
 > **Raise it only together with the memory tier — they are coupled.**
@@ -250,4 +250,4 @@ curl -i --max-time 4 --http1.1 \
    either moved.
 6. If `patches/map-dimensions-from-header.patch` no longer applies, the build stops. Remake it against
    the new `models/vault/map.php` (`get_image_dimensions`), keeping the header read; the build's map
-   smoke test measures an 8192x8192 map under nano's 128M `memory_limit`.
+   smoke test measures a map larger than nano's `memory_limit`.
